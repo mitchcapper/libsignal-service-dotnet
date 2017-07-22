@@ -20,7 +20,7 @@ namespace Coe.WebSocketWrapper
         private const int ReceiveChunkSize = 1024;
         private const int SendChunkSize = 1024;
 
-        private readonly ClientWebSocket _ws;
+        private ClientWebSocket _ws;
         private readonly Uri _uri;
         private readonly CancellationToken Token;
 
@@ -29,36 +29,96 @@ namespace Coe.WebSocketWrapper
 
         public WebSocketWrapper(string uri, CancellationToken token)
         {
-            _ws = new ClientWebSocket();
-            _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
+            CreateSocket();
             _uri = new Uri(uri);
             Token = token;
+        }
+        private void CreateSocket()
+        {
+            _ws = new ClientWebSocket();
+            _ws.Options.KeepAliveInterval = TimeSpan.FromSeconds(20);
         }
 
         public void HandleOutgoingWS()
         {
             Debug.WriteLine(TAG + "HandleOutgoingWS started");
+            byte[] buf = null;
             while (!Token.IsCancellationRequested)
             {
+                
                 try
                 {
-                    var buf = OutgoingQueue.Take(Token);
+                    if (buf == null)
+                        buf = OutgoingQueue.Take(Token);
+                    reconnect_task?.Wait();
                     _ws.SendAsync(new ArraySegment<byte>(buf, 0, buf.Length), WebSocketMessageType.Binary, true, Token).Wait();
+                    buf = null; //set to null so we do not retry the same block
                 }
                 catch (TaskCanceledException e)
                 {
+                    if (!Token.IsCancellationRequested)
+                        reconnect().Wait();
                     Debug.WriteLine(TAG + "HandleOutgoingWS shutting down");
                 }
                 catch (Exception e)
                 {
                     Debug.WriteLine(TAG + "WS SendAsync failed: " + e.Message);
-                    //TODO reconnect
+                    reconnect().Wait();
                 }
             }
             //TODO dispose
             Debug.WriteLine(TAG + "HandleOutgoingWS finished");
         }
+        private Task reconnect_task;
+        public async Task reconnect()
+        {
+            if (Token.IsCancellationRequested)
+                return;
+            if (reconnect_task != null)
+            {
+                await reconnect_task;
+                return;
+            }
+            var task = new TaskCompletionSource<bool>();
+            reconnect_task = task.Task;
+            var tries = 0;
+            try
+            {
+                await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "goodbye", Token);
+            }
+            catch(Exception e)
+            {
+                Debug.WriteLine("exception while closing of: " + e.Message);
+            }
+            if (Token.IsCancellationRequested)
+                return;
+            while (true)
+            {
+                try
+                {
+                    tries++;
+                    CreateSocket();
+                    await _ws.ConnectAsync(_uri, Token);
+                    break;
+                }
+                catch (Exception e)
+                {
+                    Debug.WriteLine("Unable to reconnect due to: " + e.Message);
+                    var delay_length = 15;
+                    if (tries > 20)
+                        delay_length = 60 * 5;
+                    if (tries > 10)
+                        delay_length = 60;
+                    if (tries > 5)
+                        delay_length = 30;
+                    await Task.Delay(1000 * delay_length);
+                }
+            }
+            task.SetResult(true);
+            reconnect_task = null;
+            Debug.WriteLine("SUCCESSFUL RECONNECT");
 
+        }
         public void HandleIncomingWS()
         {
             Debug.WriteLine(TAG + "HandleIncomingWS started");
@@ -71,11 +131,12 @@ namespace Coe.WebSocketWrapper
                 {
                     do
                     {
+                        reconnect_task?.Wait();
                         result = _ws.ReceiveAsync(new ArraySegment<byte>(buffer), Token).Result;
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
                             _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None).Wait();
-                            //TODO reconnect
+                            throw new Exception("Got a close message requesting reconnect");
                         }
                         else
                         {
@@ -86,13 +147,15 @@ namespace Coe.WebSocketWrapper
                 }
                 catch (TaskCanceledException e)
                 {
+                    if (!Token.IsCancellationRequested)
+                        reconnect().Wait();
                     Debug.WriteLine(TAG + "HandleIncomingWS shutting down");
                 }
                 catch (Exception e)
                 {
                     Debug.WriteLine(e.Message);
                     Debug.WriteLine(e.StackTrace);
-                    //TODO reconnect
+                    reconnect().Wait();
                 }
             }
             //TODO dispose
