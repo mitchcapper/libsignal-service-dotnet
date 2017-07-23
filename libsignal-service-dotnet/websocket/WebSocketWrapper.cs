@@ -20,7 +20,7 @@ namespace Coe.WebSocketWrapper
         private const int ReceiveChunkSize = 1024;
         private const int SendChunkSize = 1024;
 
-        private ClientWebSocket _ws;
+        private volatile ClientWebSocket _ws;
         private readonly Uri _uri;
         private readonly CancellationToken Token;
 
@@ -45,7 +45,6 @@ namespace Coe.WebSocketWrapper
             byte[] buf = null;
             while (!Token.IsCancellationRequested)
             {
-                
                 try
                 {
                     if (buf == null)
@@ -69,55 +68,61 @@ namespace Coe.WebSocketWrapper
             //TODO dispose
             Debug.WriteLine(TAG + "HandleOutgoingWS finished");
         }
-        private Task ReconnectTask;
+        private volatile Task ReconnectTask;
+        private object ReconnectLock = new object();
         public void Reconnect()
         {
             if (Token.IsCancellationRequested)
                 return;
+            var cur_socket = _ws;
             if (ReconnectTask != null)
             {
                 ReconnectTask?.Wait();//race condition handling
                 return;
             }
-            var task = new TaskCompletionSource<bool>();
-            ReconnectTask = task.Task;
-            var tries = 0;
-            try
+            lock (ReconnectLock)
             {
-                _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "goodbye", Token).Wait();
-            }
-            catch(Exception e)
-            {
-                Debug.WriteLine("exception while closing of: " + e.Message);
-            }
-            if (Token.IsCancellationRequested)
-                return;
-            while (true)
-            {
+                if (cur_socket != _ws)//assume we waited on the lock and a reconnect occurred
+                    return;
+                var task = new TaskCompletionSource<bool>();
+                ReconnectTask = task.Task;
+                var tries = 0;
                 try
                 {
-                    tries++;
-                    CreateSocket();
-                    _ws.ConnectAsync(_uri, Token).Wait();
-                    break;
+                    _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "goodbye", Token).Wait();
                 }
                 catch (Exception e)
                 {
-                    Debug.WriteLine("Unable to reconnect due to: " + e.Message);
-                    var delay_length = 15;
-                    if (tries > 20)
-                        delay_length = 60 * 5;
-                    if (tries > 10)
-                        delay_length = 60;
-                    if (tries > 5)
-                        delay_length = 30;
-                    Task.Delay(1000 * delay_length).Wait();
+                    Debug.WriteLine("exception while closing of: " + e.Message);
                 }
+                while (true)
+                {
+                    try
+                    {
+                        if (Token.IsCancellationRequested)
+                            return;
+                        tries++;
+                        CreateSocket();
+                        _ws.ConnectAsync(_uri, Token).Wait();
+                        break;
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.WriteLine("Unable to reconnect due to: " + e.Message);
+                        var delay_length = 15;
+                        if (tries > 20)
+                            delay_length = 60 * 5;
+                        else if (tries > 10)
+                            delay_length = 60;
+                        else if (tries > 5)
+                            delay_length = 30;
+                        Task.Delay(1000 * delay_length,Token).Wait();
+                    }
+                }
+                task.SetResult(true);
+                ReconnectTask = null;
             }
-            task.SetResult(true);
-            ReconnectTask = null;
             Debug.WriteLine("SUCCESSFUL RECONNECT");
-
         }
         public void HandleIncomingWS()
         {
