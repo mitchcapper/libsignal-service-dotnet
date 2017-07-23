@@ -50,41 +50,41 @@ namespace Coe.WebSocketWrapper
                 {
                     if (buf == null)
                         buf = OutgoingQueue.Take(Token);
-                    reconnect_task?.Wait();
+                    ReconnectTask?.Wait();
                     _ws.SendAsync(new ArraySegment<byte>(buf, 0, buf.Length), WebSocketMessageType.Binary, true, Token).Wait();
                     buf = null; //set to null so we do not retry the same block
                 }
                 catch (TaskCanceledException e)
                 {
                     if (!Token.IsCancellationRequested)
-                        reconnect().Wait();
+                        Reconnect();
                     Debug.WriteLine(TAG + "HandleOutgoingWS shutting down");
                 }
                 catch (Exception e)
                 {
                     Debug.WriteLine(TAG + "WS SendAsync failed: " + e.Message);
-                    reconnect().Wait();
+                    Reconnect();
                 }
             }
             //TODO dispose
             Debug.WriteLine(TAG + "HandleOutgoingWS finished");
         }
-        private Task reconnect_task;
-        public async Task reconnect()
+        private Task ReconnectTask;
+        public void Reconnect()
         {
             if (Token.IsCancellationRequested)
                 return;
-            if (reconnect_task != null)
+            if (ReconnectTask != null)
             {
-                await reconnect_task;
+                ReconnectTask?.Wait();//race condition handling
                 return;
             }
             var task = new TaskCompletionSource<bool>();
-            reconnect_task = task.Task;
+            ReconnectTask = task.Task;
             var tries = 0;
             try
             {
-                await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "goodbye", Token);
+                _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "goodbye", Token).Wait();
             }
             catch(Exception e)
             {
@@ -98,7 +98,7 @@ namespace Coe.WebSocketWrapper
                 {
                     tries++;
                     CreateSocket();
-                    await _ws.ConnectAsync(_uri, Token);
+                    _ws.ConnectAsync(_uri, Token).Wait();
                     break;
                 }
                 catch (Exception e)
@@ -111,11 +111,11 @@ namespace Coe.WebSocketWrapper
                         delay_length = 60;
                     if (tries > 5)
                         delay_length = 30;
-                    await Task.Delay(1000 * delay_length);
+                    Task.Delay(1000 * delay_length).Wait();
                 }
             }
             task.SetResult(true);
-            reconnect_task = null;
+            ReconnectTask = null;
             Debug.WriteLine("SUCCESSFUL RECONNECT");
 
         }
@@ -131,7 +131,7 @@ namespace Coe.WebSocketWrapper
                 {
                     do
                     {
-                        reconnect_task?.Wait();
+                        ReconnectTask?.Wait();
                         result = _ws.ReceiveAsync(new ArraySegment<byte>(buffer), Token).Result;
                         if (result.MessageType == WebSocketMessageType.Close)
                         {
@@ -148,14 +148,14 @@ namespace Coe.WebSocketWrapper
                 catch (TaskCanceledException e)
                 {
                     if (!Token.IsCancellationRequested)
-                        reconnect().Wait();
+                        Reconnect();
                     Debug.WriteLine(TAG + "HandleIncomingWS shutting down");
                 }
                 catch (Exception e)
                 {
                     Debug.WriteLine(e.Message);
                     Debug.WriteLine(e.StackTrace);
-                    reconnect().Wait();
+                    Reconnect();
                 }
             }
             //TODO dispose
