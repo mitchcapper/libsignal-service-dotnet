@@ -668,9 +668,19 @@ namespace libsignalservice.push
             return responseBody;
         }
 
+        private static byte[] GetCertHash256(X509Certificate2 cert)
+        {
+            using (HashAlgorithm alg = SHA256.Create())
+            {
+                return alg.ComputeHash(cert.RawData);
+            }
+        }
         private bool Func(HttpRequestMessage a, X509Certificate2 b, X509Chain c, SslPolicyErrors d)
         {
-            return true;
+            var hash = Convert.ToBase64String(GetCertHash256(b));
+            if (hash == "1ODRmVFKkopBxIVhEXmzk6E8koA4xLsezFJF055mC3Q=") //hash value from textsecure-servicewhispersystemsorg.crt
+                return true;
+            return false;
         }
 
         private HttpResponseMessage getConnection(string urlFragment, string method, string body)
@@ -682,7 +692,18 @@ namespace libsignalservice.push
                 May<string> hostHeader = connectionInformation.getHostHeader();
                 Uri uri = new Uri(string.Format("{0}{1}", url, urlFragment));
                 Debug.WriteLine("{0}: Uri {1}", TAG, uri);
-                HttpClient connection = new HttpClient();
+                HttpClientHandler handler = new HttpClientHandler();
+                HttpClient connection;
+                try
+                {
+                    handler.ServerCertificateCustomValidationCallback = Func;
+                    connection = new HttpClient(handler);
+                    Debug.WriteLine("Successfully set ServerCertificateCustomValidationCallback");
+                } catch (Exception e)
+                {
+                    Debug.WriteLine("Cannot set ServerCertificateCustomValidationCallback: {0}", e);
+                    connection = new HttpClient();
+                }
 
                 var headers = connection.DefaultRequestHeaders;
 
