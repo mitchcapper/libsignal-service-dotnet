@@ -76,8 +76,12 @@ namespace libsignalservice.push
         private readonly CredentialsProvider credentialsProvider;
         private readonly string userAgent;
 
-        public PushServiceSocket(SignalServiceUrl[] serviceUrls, CredentialsProvider credentialsProvider, string userAgent)
+        public PushServiceSocket(SignalServiceUrl[] serviceUrls, CredentialsProvider credentialsProvider, string userAgent, X509Certificate2 server_cert=null)
         {
+#if NETCOREAPP2_1
+            if (server_cert != null)
+                server_cert_raw = server_cert.GetRawCertData();
+#endif
             this.credentialsProvider = credentialsProvider;
             this.userAgent = userAgent;
             this.signalConnectionInformation = new SignalConnectionInformation[serviceUrls.Length];
@@ -667,22 +671,13 @@ namespace libsignalservice.push
 
             return responseBody;
         }
-
-        private static byte[] GetCertHash256(X509Certificate2 cert)
+#if NETCOREAPP2_1
+        private byte[] server_cert_raw;
+        private bool ServerCertificateCustomValidationCallback(HttpRequestMessage message, X509Certificate2 cert, X509Chain chain, SslPolicyErrors policy)
         {
-            using (HashAlgorithm alg = SHA256.Create())
-            {
-                return alg.ComputeHash(cert.RawData);
-            }
+            return cert.GetRawCertData().SequenceEqual(server_cert_raw);
         }
-        private bool Func(HttpRequestMessage a, X509Certificate2 b, X509Chain c, SslPolicyErrors d)
-        {
-            var hash = Convert.ToBase64String(GetCertHash256(b));
-            if (hash == "1ODRmVFKkopBxIVhEXmzk6E8koA4xLsezFJF055mC3Q=") //hash value from textsecure-servicewhispersystemsorg.crt
-                return true;
-            return false;
-        }
-
+#endif
         private HttpResponseMessage getConnection(string urlFragment, string method, string body)
         {
             try
@@ -692,18 +687,15 @@ namespace libsignalservice.push
                 May<string> hostHeader = connectionInformation.getHostHeader();
                 Uri uri = new Uri(string.Format("{0}{1}", url, urlFragment));
                 Debug.WriteLine("{0}: Uri {1}", TAG, uri);
-                HttpClientHandler handler = new HttpClientHandler();
                 HttpClient connection;
-                try
-                {
-                    handler.ServerCertificateCustomValidationCallback = Func;
-                    connection = new HttpClient(handler);
-                    Debug.WriteLine("Successfully set ServerCertificateCustomValidationCallback");
-                } catch (Exception e)
-                {
-                    Debug.WriteLine("Cannot set ServerCertificateCustomValidationCallback: {0}", e);
-                    connection = new HttpClient();
-                }
+#if NETCOREAPP2_1
+                HttpClientHandler handler = new HttpClientHandler();
+                if (server_cert_raw != null)
+                    handler.ServerCertificateCustomValidationCallback = ServerCertificateCustomValidationCallback;
+                connection = new HttpClient(handler);
+#else
+                connection = new HttpClient();
+#endif
 
                 var headers = connection.DefaultRequestHeaders;
 

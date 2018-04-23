@@ -3,6 +3,7 @@ using libsignalservice.crypto;
 using libsignalservice.push;
 using libsignalservice.websocket;
 using System.Collections.Concurrent;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
 namespace libsignal.push
@@ -14,12 +15,12 @@ namespace libsignal.push
         private CancellationToken Token;
         private readonly BlockingCollection<byte[]> IncomingRequests = new BlockingCollection<byte[]>(new ConcurrentQueue<byte[]>());
 
-        public ProvisioningSocket(string httpUri, CancellationToken token)
+        public ProvisioningSocket(string httpUri, CancellationToken token, X509Certificate2 server_cert=null)
         {
             Token = token;
             WsUri = httpUri.Replace("https://", "wss://")
                 .Replace("http://", "ws://") + "/v1/websocket/provisioning/";
-            WebSocket = new WebSocketWrapper(WsUri, token);
+            WebSocket = new WebSocketWrapper(WsUri, token, server_cert);
             WebSocket.OnMessage(Connection_OnMessage);
         }
 

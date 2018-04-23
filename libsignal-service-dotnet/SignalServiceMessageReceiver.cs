@@ -8,6 +8,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using static libsignalservice.messages.SignalServiceAttachment;
 
@@ -26,6 +27,7 @@ namespace libsignalservice
         private readonly CredentialsProvider credentialsProvider;
         private readonly string userAgent;
         private readonly CancellationToken Token;
+        private readonly X509Certificate2 server_cert;
 
         /// <summary>
         /// Construct a SignalServiceMessageReceiver.
@@ -33,12 +35,13 @@ namespace libsignalservice
         /// <param name="urls">The URL of the Signal Service.</param>
         /// <param name="credentials">The Signal Service user's credentials</param>
         /// <param name="userAgent"></param>
-        public SignalServiceMessageReceiver(CancellationToken token, SignalServiceUrl[] urls, CredentialsProvider credentials, string userAgent)
+        public SignalServiceMessageReceiver(CancellationToken token, SignalServiceUrl[] urls, CredentialsProvider credentials, string userAgent, X509Certificate2 server_cert=null)
         {
             this.Token = token;
             this.urls = urls;
             this.credentialsProvider = credentials;
-            this.socket = new PushServiceSocket(urls, credentials, userAgent);
+            this.server_cert = server_cert;
+            this.socket = new PushServiceSocket(urls, credentials, userAgent, server_cert);
             this.userAgent = userAgent;
         }
 
@@ -182,7 +185,7 @@ namespace libsignalservice
         /// <returns>A SignalServiceMessagePipe for receiving Signal Service messages.</returns>
         public SignalServiceMessagePipe createMessagePipe()
         {
-            SignalWebSocketConnection webSocket = new SignalWebSocketConnection(Token, urls[0].getUrl(), credentialsProvider, userAgent);
+            SignalWebSocketConnection webSocket = new SignalWebSocketConnection(Token, urls[0].getUrl(), credentialsProvider, userAgent, server_cert);
             return new SignalServiceMessagePipe(Token, webSocket, credentialsProvider);
         }
 
