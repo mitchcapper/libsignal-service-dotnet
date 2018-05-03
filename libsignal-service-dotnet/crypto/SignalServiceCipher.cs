@@ -108,7 +108,7 @@ namespace libsignalservice.crypto
 			Action<byte[]> callback_func=null;
 			if (callback != null) 
 			{
-				callback_func = (data) => DecryptComplete(envelope, data);
+				callback_func = (data) => callback(DecryptComplete(envelope, data));
 			}
 
 			try
