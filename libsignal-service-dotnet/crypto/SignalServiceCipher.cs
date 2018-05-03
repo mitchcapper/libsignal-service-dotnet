@@ -65,85 +65,121 @@ namespace libsignalservice.crypto
 
             return new OutgoingPushMessage(type, destination.DeviceId, remoteRegistrationId, body, silent);
         }
+		private SignalServiceContent DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data) {
+			try {
+				SignalServiceContent content = new SignalServiceContent();
 
-        /// <summary>
-        /// Decrypt a received <see cref="SignalServiceEnvelope"/>
-        /// </summary>
-        /// <param name="envelope">The received SignalServiceEnvelope</param>
-        /// <returns>a decrypted SignalServiceContent</returns>
-        public SignalServiceContent decrypt(SignalServiceEnvelope envelope)
+				if (envelope.hasLegacyMessage()) {
+					DataMessage message = DataMessage.Parser.ParseFrom(decrypted_data);
+					content = new SignalServiceContent() {
+						Message = createSignalServiceMessage(envelope, message)
+					};
+				} else if (envelope.hasContent()) {
+					Content message = Content.Parser.ParseFrom(decrypted_data);
+
+					if (message.DataMessageOneofCase == Content.DataMessageOneofOneofCase.DataMessage) {
+						content = new SignalServiceContent() {
+							Message = createSignalServiceMessage(envelope, message.DataMessage)
+						};
+					} else if (message.SyncMessageOneofCase == Content.SyncMessageOneofOneofCase.SyncMessage && localAddress.getNumber().Equals(envelope.getSource())) {
+						content = new SignalServiceContent() {
+							SynchronizeMessage = createSynchronizeMessage(envelope, message.SyncMessage)
+						};
+					} else if (message.CallMessageOneofCase == Content.CallMessageOneofOneofCase.CallMessage) {
+						content = new SignalServiceContent() {
+							CallMessage = createCallMessage(message.CallMessage)
+						};
+					}
+				}
+
+				return content;
+			} catch (InvalidProtocolBufferException e) {
+				throw new InvalidMessageException(e);
+			}
+		}
+		/// <summary>
+		/// Decrypt a received <see cref="SignalServiceEnvelope"/>
+		/// </summary>
+		/// <param name="envelope">The received SignalServiceEnvelope</param>
+		/// <param name="callback">Optional callback to call during decryption rather than after, instead of returning SignalServiceContent</param>
+		/// <returns>a decrypted SignalServiceContent</returns>
+		public SignalServiceContent decrypt(SignalServiceEnvelope envelope, Action<SignalServiceContent> callback=null)
         {
-            try
+			Action<byte[]> callback_func=null;
+			if (callback != null) 
+			{
+				callback_func = (data) => DecryptComplete(envelope, data);
+			}
+
+			try
             {
                 SignalServiceContent content = new SignalServiceContent();
+				byte[] decrypted_data=null;
 
-                if (envelope.hasLegacyMessage())
+				if (envelope.hasLegacyMessage())
                 {
-                    DataMessage message = DataMessage.Parser.ParseFrom(decrypt(envelope, envelope.getLegacyMessage()));
-                    content = new SignalServiceContent()
-                    {
-                        Message = createSignalServiceMessage(envelope, message)
-                    };
+					decrypted_data = decrypt(envelope, envelope.getLegacyMessage(), callback_func);
                 }
                 else if (envelope.hasContent())
                 {
-                    Content message = Content.Parser.ParseFrom(decrypt(envelope, envelope.getContent()));
-
-                    if (message.DataMessageOneofCase == Content.DataMessageOneofOneofCase.DataMessage)
-                    {
-                        content = new SignalServiceContent()
-                        {
-                            Message = createSignalServiceMessage(envelope, message.DataMessage)
-                        };
-                    }
-                    else if (message.SyncMessageOneofCase == Content.SyncMessageOneofOneofCase.SyncMessage && localAddress.getNumber().Equals(envelope.getSource()))
-                    {
-                        content = new SignalServiceContent()
-                        {
-                            SynchronizeMessage = createSynchronizeMessage(envelope, message.SyncMessage)
-                        };
-                    }
-                    else if (message.CallMessageOneofCase == Content.CallMessageOneofOneofCase.CallMessage)
-                    {
-                        content = new SignalServiceContent()
-                        {
-                            CallMessage = createCallMessage(message.CallMessage)
-                        };
-                    }
-                }
-
-                return content;
+					decrypted_data = decrypt(envelope, envelope.getContent(), callback_func);
+				}
+				if (callback_func != null)
+				{
+					return null;
+				}
+                return DecryptComplete(envelope, decrypted_data);
             }
             catch (InvalidProtocolBufferException e)
             {
                 throw new InvalidMessageException(e);
             }
         }
+		private class DecryptionCallbackHandler : DecryptionCallback {
+			public void handlePlaintext(byte[] plaintext) {
+				callback(GetStrippedMessage(sessionCipher, plaintext));
+			}
+			public SessionCipher sessionCipher;
+			public Action<byte[]> callback;
+		}
 
-        private byte[] decrypt(SignalServiceEnvelope envelope, byte[] ciphertext)
+		private byte[] decrypt(SignalServiceEnvelope envelope, byte[] ciphertext, Action<byte[]> callback=null)
 
         {
             SignalProtocolAddress sourceAddress = new SignalProtocolAddress(envelope.getSource(), (uint)envelope.getSourceDevice());
             SessionCipher sessionCipher = new SessionCipher(signalProtocolStore, sourceAddress);
 
             byte[] paddedMessage;
+			DecryptionCallbackHandler callback_handler = null;
+			if (callback != null)
+				callback_handler = new DecryptionCallbackHandler {callback=callback,sessionCipher=sessionCipher };
 
-            if (envelope.isPreKeySignalMessage())
+			if (envelope.isPreKeySignalMessage())
             {
-                paddedMessage = sessionCipher.decrypt(new PreKeySignalMessage(ciphertext));
+				if (callback_handler != null) {
+					sessionCipher.decrypt(new PreKeySignalMessage(ciphertext),callback_handler);
+					return null;
+				}
+				paddedMessage = sessionCipher.decrypt(new PreKeySignalMessage(ciphertext));
             }
             else if (envelope.isSignalMessage())
             {
-                paddedMessage = sessionCipher.decrypt(new SignalMessage(ciphertext));
+				if (callback_handler != null) {
+					sessionCipher.decrypt(new SignalMessage(ciphertext), callback_handler);
+					return null;
+				}
+				paddedMessage = sessionCipher.decrypt(new SignalMessage(ciphertext));
             }
             else
             {
                 throw new InvalidMessageException("Unknown type: " + envelope.getType() + " from " + envelope.getSource());
             }
-
-            PushTransportDetails transportDetails = new PushTransportDetails(sessionCipher.getSessionVersion());
-            return transportDetails.getStrippedPaddingMessageBody(paddedMessage);
+            return GetStrippedMessage(sessionCipher, paddedMessage);
         }
+		private static byte[] GetStrippedMessage(SessionCipher sessionCipher, byte[] paddedMessage) {
+			PushTransportDetails transportDetails = new PushTransportDetails(sessionCipher.getSessionVersion());
+			return transportDetails.getStrippedPaddingMessageBody(paddedMessage);
+		}
 
         private SignalServiceDataMessage createSignalServiceMessage(SignalServiceEnvelope envelope, DataMessage content)
         {
