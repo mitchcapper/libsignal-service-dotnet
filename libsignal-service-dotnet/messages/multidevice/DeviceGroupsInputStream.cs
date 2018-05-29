@@ -1,36 +1,49 @@
 using libsignalservice.push;
 using libsignalservice.util;
-using Strilanc.Value;
-
-/**
- * Copyright (C) 2017 smndtrl, golf1052
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 using System.Collections.Generic;
 using System.IO;
 
 namespace libsignalservice.messages.multidevice
 {
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
     public class DeviceGroupsInputStream : ChunkedInputStream
     {
-        public DeviceGroupsInputStream(Stream input)
-        : base(input)
-        {
-        }
+        public DeviceGroupsInputStream(Stream input): base(input) { }
 
-        
+        public DeviceGroup Read()
+        {
+            int detailsLength = ReadRawVarint32();
+            if (detailsLength == -1)
+            {
+                return null;
+            }
+            byte[] detailsSerialized = new byte[detailsLength];
+            Util.ReadFully(InputStream, detailsSerialized);
+
+            GroupDetails details = GroupDetails.Parser.ParseFrom(detailsSerialized);
+            byte[] id = details.Id.ToByteArray();
+            string name = details.Name;
+            List<string> members = new List<string>();
+            members.AddRange(details.Members);
+            SignalServiceAttachmentStream avatar = null;
+            bool active = details.Active;
+            uint? expirationTimer = null;
+
+            if (details.AvatarOneofCase == GroupDetails.AvatarOneofOneofCase.Avatar)
+            {
+                long avatarLength = details.Avatar.Length;
+                Stream avatarStream = new LimitedInputStream(InputStream, avatarLength);
+                string avatarContentType = details.Avatar.ContentType;
+                avatar = new SignalServiceAttachmentStream(avatarStream, avatarContentType, avatarLength, null, false, null);
+            }
+
+            if (details.ExpireTimerOneofCase == GroupDetails.ExpireTimerOneofOneofCase.ExpireTimer)
+            {
+                expirationTimer = details.ExpireTimer;
+            }
+
+            return new DeviceGroup(id, name, members, avatar, active, expirationTimer);
+        }
     }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 }

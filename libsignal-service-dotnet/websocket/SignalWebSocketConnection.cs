@@ -26,36 +26,40 @@ namespace libsignalservice.websocket
         private readonly CredentialsProvider CredentialsProvider;
         private readonly string UserAgent;
         private WebSocketWrapper WebSocket;
-        private CancellationToken Token;
+        private readonly CancellationToken Token;
+        private readonly ConnectivityListener Listener;
 
-        internal SignalWebSocketConnection(CancellationToken token, string httpUri, CredentialsProvider credentialsProvider, string userAgent, X509Certificate2 server_cert)
+        internal SignalWebSocketConnection(CancellationToken token, string httpUri, CredentialsProvider credentialsProvider, string userAgent, ConnectivityListener listener, X509Certificate2 server_cert)
         {
             Token = token;
             CredentialsProvider = credentialsProvider;
             UserAgent = userAgent;
-            if (credentialsProvider.GetDeviceId() == SignalServiceAddress.DEFAULT_DEVICE_ID)
+            Listener = listener;
+            if (credentialsProvider.DeviceId == SignalServiceAddress.DEFAULT_DEVICE_ID)
             {
                 WsUri = httpUri.Replace("https://", "wss://")
-                    .Replace("http://", "ws://") + $"/v1/websocket/?login={credentialsProvider.GetUser()}&password={credentialsProvider.GetPassword()}";
+                    .Replace("http://", "ws://") + $"/v1/websocket/?login={credentialsProvider.User}&password={credentialsProvider.Password}";
             }
             else
             {
                 WsUri = httpUri.Replace("https://", "wss://")
-                    .Replace("http://", "ws://") + $"/v1/websocket/?login={credentialsProvider.GetUser()}.{credentialsProvider.GetDeviceId()}&password={credentialsProvider.GetPassword()}";
+                    .Replace("http://", "ws://") + $"/v1/websocket/?login={credentialsProvider.User}.{credentialsProvider.DeviceId}&password={credentialsProvider.Password}";
             }
             UserAgent = userAgent;
-            WebSocket = new WebSocketWrapper(WsUri, token, server_cert);
+            WebSocket = new WebSocketWrapper(WsUri, server_cert);
             WebSocket.OnConnect(Connection_OnOpened);
             WebSocket.OnMessage(Connection_OnMessage);
         }
 
-        public void Connect()
+        public async Task Connect(CancellationToken token)
         {
-            WebSocket.Connect();
+            Listener?.OnConnecting();
+            await WebSocket.Connect(token);
         }
 
         private void Connection_OnOpened()
         {
+            Listener?.OnConnecting();
         }
 
         private void Connection_OnMessage(byte[] obj)

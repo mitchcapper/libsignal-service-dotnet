@@ -2,9 +2,11 @@ using Newtonsoft.Json;
 
 namespace libsignal.push
 {
-    public class DeviceId
+    internal class DeviceId
     {
-        [JsonProperty]
-        public int deviceId { get; set; }
+        [JsonProperty("deviceId")]
+        public int NewDeviceId { get; private set; }
+
+        public DeviceId() { }
     }
 }

@@ -3,28 +3,14 @@ using libsignal.ecc;
 using libsignal.push;
 using libsignal.state;
 using libsignal_service_dotnet.messages.calls;
+using libsignaldotnet.push.http;
+using libsignalservice.configuration;
+using libsignalservice.crypto;
 using libsignalservice.messages.multidevice;
+using libsignalservice.profiles;
 using libsignalservice.push.exceptions;
 using libsignalservice.util;
 using Newtonsoft.Json;
-using Strilanc.Value;
-
-/**
- * Copyright (C) 2015-2017 smndtrl, golf1052
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
 
 using System;
 using System.Collections.Generic;
@@ -33,26 +19,27 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using static libsignalservice.messages.SignalServiceAttachment;
 
 namespace libsignalservice.push
 {
-    public class PushServiceSocket
+    internal class PushServiceSocket
     {
         private static readonly string TAG = "PushServiceSocket";
-
         private static readonly string CREATE_ACCOUNT_SMS_PATH = "/v1/accounts/sms/code/{0}";
         private static readonly string CREATE_ACCOUNT_VOICE_PATH = "/v1/accounts/voice/code/{0}";
         private static readonly string VERIFY_ACCOUNT_CODE_PATH = "/v1/accounts/code/{0}";
-        private static readonly string VERIFY_ACCOUNT_TOKEN_PATH = "/v1/accounts/token/{0}";
         private static readonly string REGISTER_GCM_PATH = "/v1/accounts/gcm/";
-        private static readonly string REQUEST_TOKEN_PATH = "/v1/accounts/token";
         private static readonly string TURN_SERVER_INFO = "/v1/accounts/turn";
         private static readonly string SET_ACCOUNT_ATTRIBUTES = "/v1/accounts/attributes";
+        private static readonly String PIN_PATH = "/v1/accounts/pin/";
 
         private static readonly string PREKEY_METADATA_PATH = "/v2/keys/";
         private static readonly string PREKEY_PATH = "/v2/keys/{0}";
@@ -67,142 +54,128 @@ namespace libsignalservice.push
         private static readonly string DIRECTORY_VERIFY_PATH = "/v1/directory/{0}";
         private static readonly string MESSAGE_PATH = "/v1/messages/{0}";
         private static readonly string ACKNOWLEDGE_MESSAGE_PATH = "/v1/messages/{0}/{1}";
-        private static readonly string RECEIPT_PATH = "/v1/receipt/{0}/{1}";
         private static readonly string ATTACHMENT_PATH = "/v1/attachments/{0}";
 
         private static readonly string PROFILE_PATH = "/v1/profile/%s";
 
-        private readonly SignalConnectionInformation[] signalConnectionInformation;
-        private readonly CredentialsProvider credentialsProvider;
-        private readonly string userAgent;
+        private readonly SignalServiceConfiguration SignalConnectionInformation;
+        private readonly CredentialsProvider CredentialsProvider;
+        private readonly string UserAgent;
 
-        public PushServiceSocket(SignalServiceUrl[] serviceUrls, CredentialsProvider credentialsProvider, string userAgent, X509Certificate2 server_cert=null)
+        public PushServiceSocket(SignalServiceConfiguration serviceUrls, CredentialsProvider credentialsProvider, string userAgent, X509Certificate2 server_cert=null)
         {
 #if NETCOREAPP2_1
             if (server_cert != null)
                 server_cert_raw = server_cert.GetRawCertData();
 #endif
-            this.credentialsProvider = credentialsProvider;
-            this.userAgent = userAgent;
-            this.signalConnectionInformation = new SignalConnectionInformation[serviceUrls.Length];
-
-            for (int i = 0; i < serviceUrls.Length; i++)
-            {
-                signalConnectionInformation[i] = new SignalConnectionInformation(serviceUrls[i]);
-            }
+            CredentialsProvider = credentialsProvider;
+            UserAgent = userAgent;
+            SignalConnectionInformation = serviceUrls;
         }
 
-        public bool createAccount(bool voice) //throws IOException
+        public bool CreateAccount(bool voice)
         {
             string path = voice ? CREATE_ACCOUNT_VOICE_PATH : CREATE_ACCOUNT_SMS_PATH;
-            makeRequest(string.Format(path, credentialsProvider.GetUser()), "GET", null);
+            MakeServiceRequest(string.Format(path, CredentialsProvider.User), "GET", null);
             return true;
         }
 
-        public bool verifyAccountCode(string verificationCode, string signalingKey, uint registrationId, bool fetchesMessages)
+        public bool VerifyAccountCode(string verificationCode, string signalingKey, uint registrationId, bool fetchesMessages, string pin)
         {
-            AccountAttributes signalingKeyEntity = new AccountAttributes(signalingKey, registrationId, fetchesMessages);
-            makeRequest(string.Format(VERIFY_ACCOUNT_CODE_PATH, verificationCode), "PUT", JsonUtil.toJson(signalingKeyEntity));
+            AccountAttributes signalingKeyEntity = new AccountAttributes(signalingKey, registrationId, fetchesMessages, pin);
+            MakeServiceRequest(string.Format(VERIFY_ACCOUNT_CODE_PATH, verificationCode), "PUT", JsonUtil.ToJson(signalingKeyEntity));
             return true;
         }
 
-        public bool setAccountAttributes(string signalingKey, uint registrationId, bool fetchesMessages)
+        public bool SetAccountAttributes(string signalingKey, uint registrationId, bool fetchesMessages, string pin)
         {
-            AccountAttributes accountAttributesEntity = new AccountAttributes(signalingKey, registrationId, fetchesMessages);
-            makeRequest(SET_ACCOUNT_ATTRIBUTES, "PUT", JsonUtil.toJson(accountAttributesEntity));
+            AccountAttributes accountAttributesEntity = new AccountAttributes(signalingKey, registrationId, fetchesMessages, pin);
+            MakeServiceRequest(SET_ACCOUNT_ATTRIBUTES, "PUT", JsonUtil.ToJson(accountAttributesEntity));
             return true;
         }
 
-        public string getAccountVerificationToken()// throws IOException
-        {
-            string responseText = makeRequest(REQUEST_TOKEN_PATH, "GET", null);
-            return JsonUtil.fromJson<AuthorizationToken>(responseText).Token;
-        }
-
-        public int finishNewDeviceRegistration(String code, String signalingKey, bool supportsSms, bool fetchesMessages, int registrationId, String deviceName)
+        public async Task<int> FinishNewDeviceRegistration(CancellationToken token, String code, String signalingKey, bool supportsSms, bool fetchesMessages, int registrationId, String deviceName)
         {
             ConfirmCodeMessage javaJson = new ConfirmCodeMessage(signalingKey, supportsSms, fetchesMessages, registrationId, deviceName);
-            string json = JsonUtil.toJson(javaJson);
-            string responseText = makeRequest(string.Format(DEVICE_PATH, code), "PUT", json);
-            DeviceId response = JsonUtil.fromJson<DeviceId>(responseText);
-            return response.deviceId;
+            string json = JsonUtil.ToJson(javaJson);
+            string responseText = await MakeServiceRequestAsync(token, string.Format(DEVICE_PATH, code), "PUT", json);
+            DeviceId response = JsonUtil.FromJson<DeviceId>(responseText);
+            return response.NewDeviceId;
         }
 
-        public string getNewDeviceVerificationCode()// throws IOException
+        public string GetNewDeviceVerificationCode()// throws IOException
         {
-            string responseText = makeRequest(PROVISIONING_CODE_PATH, "GET", null);
-            return JsonUtil.fromJson<DeviceCode>(responseText).getVerificationCode();
+            string responseText = MakeServiceRequest(PROVISIONING_CODE_PATH, "GET", null);
+            return JsonUtil.FromJson<DeviceCode>(responseText).VerificationCode;
         }
 
-        public bool sendProvisioningMessage(string destination, byte[] body)// throws IOException
+        public bool SendProvisioningMessage(string destination, byte[] body)// throws IOException
         {
-            makeRequest(string.Format(PROVISIONING_MESSAGE_PATH, destination), "PUT",
-                    JsonUtil.toJson(new ProvisioningMessage(Base64.encodeBytes(body))));
+            MakeServiceRequest(string.Format(PROVISIONING_MESSAGE_PATH, destination), "PUT",
+                    JsonUtil.ToJson(new ProvisioningMessage(Base64.EncodeBytes(body))));
             return true;
         }
 
-        public List<DeviceInfo> getDevices()// throws IOException
+        public List<DeviceInfo> GetDevices()// throws IOException
         {
-            string responseText = makeRequest(string.Format(DEVICE_PATH, ""), "GET", null);
-            return JsonUtil.fromJson<DeviceInfoList>(responseText).getDevices();
+            string responseText = MakeServiceRequest(string.Format(DEVICE_PATH, ""), "GET", null);
+            return JsonUtil.FromJson<DeviceInfoList>(responseText).Devices;
         }
 
-        public bool removeDevice(long deviceId)// throws IOException
+        public bool RemoveDevice(long deviceId)// throws IOException
         {
-            makeRequest(string.Format(DEVICE_PATH, deviceId), "DELETE", null);
+            MakeServiceRequest(string.Format(DEVICE_PATH, deviceId), "DELETE", null);
             return true;
         }
 
-        public bool sendReceipt(string destination, ulong messageId, May<string> relay)// throws IOException
-        {
-            string path = string.Format(RECEIPT_PATH, destination, messageId);
-
-            if (relay.HasValue)
-            {
-                path += "?relay=" + relay.ForceGetValue();
-            }
-
-            makeRequest(path, "PUT", null);
-            return true;
-        }
-
-        public void registerGcmId(String gcmRegistrationId)
+        public void RegisterGcmId(String gcmRegistrationId)
         {
             GcmRegistrationId registration = new GcmRegistrationId(gcmRegistrationId, true);
-            makeRequest(REGISTER_GCM_PATH, "PUT", JsonUtil.toJson(registration));
+            MakeServiceRequest(REGISTER_GCM_PATH, "PUT", JsonUtil.ToJson(registration));
         }
 
-        public void unregisterGcmId()
+        public void UnregisterGcmId()
         {
-            makeRequest(REGISTER_GCM_PATH, "DELETE", null);
+            MakeServiceRequest(REGISTER_GCM_PATH, "DELETE", null);
         }
 
-        public SendMessageResponse sendMessage(OutgoingPushMessageList bundle)
+        public void SetPin(string pin)
+        {
+            RegistrationLock accountLock = new RegistrationLock(pin);
+            MakeServiceRequest(PIN_PATH, "PUT", JsonUtil.ToJson(accountLock));
+        }
+
+        public void RemovePin()
+        {
+            MakeServiceRequest(PIN_PATH, "PUT", null);
+        }
+
+        public SendMessageResponse SendMessage(OutgoingPushMessageList bundle)
         {
             try
             {
-                string responseText = makeRequest(string.Format(MESSAGE_PATH, bundle.getDestination()), "PUT", JsonUtil.toJson(bundle));
-                return JsonUtil.fromJson<SendMessageResponse>(responseText);
+                string responseText = MakeServiceRequest(string.Format(MESSAGE_PATH, bundle.Destination), "PUT", JsonUtil.ToJson(bundle));
+                return JsonUtil.FromJson<SendMessageResponse>(responseText);
             }
             catch (NotFoundException nfe)
             {
-                throw new UnregisteredUserException(bundle.getDestination(), nfe);
+                throw new UnregisteredUserException(bundle.Destination, nfe);
             }
         }
 
-        public List<SignalServiceEnvelopeEntity> getMessages()// throws IOException
+        public List<SignalServiceEnvelopeEntity> GetMessages()// throws IOException
         {
-            string responseText = makeRequest(string.Format(MESSAGE_PATH, ""), "GET", null);
-            return JsonUtil.fromJson<SignalServiceEnvelopeEntityList>(responseText).getMessages();
+            string responseText = MakeServiceRequest(string.Format(MESSAGE_PATH, ""), "GET", null);
+            return JsonUtil.FromJson<SignalServiceEnvelopeEntityList>(responseText).Messages;
         }
 
-        public bool acknowledgeMessage(string sender, ulong timestamp)// throws IOException
+        public bool AcknowledgeMessage(string sender, ulong timestamp)// throws IOException
         {
-            makeRequest(string.Format(ACKNOWLEDGE_MESSAGE_PATH, sender, timestamp), "DELETE", null);
+            MakeServiceRequest(string.Format(ACKNOWLEDGE_MESSAGE_PATH, sender, timestamp), "DELETE", null);
             return true;
         }
 
-        public bool registerPreKeys(IdentityKey identityKey,
+        public bool RegisterPreKeys(IdentityKey identityKey,
                                     SignedPreKeyRecord signedPreKey,
                                     IList<PreKeyRecord> records)
         //throws IOException
@@ -221,20 +194,20 @@ namespace libsignalservice.push
                                                                    signedPreKey.getKeyPair().getPublicKey(),
                                                                    signedPreKey.getSignature());
 
-            makeRequest(string.Format(PREKEY_PATH, ""), "PUT",
-                JsonUtil.toJson(new PreKeyState(entities, signedPreKeyEntity, identityKey)));
+            MakeServiceRequest(string.Format(PREKEY_PATH, ""), "PUT",
+                JsonUtil.ToJson(new PreKeyState(entities, signedPreKeyEntity, identityKey)));
             return true;
         }
 
-        public int getAvailablePreKeys()// throws IOException
+        public int GetAvailablePreKeys()// throws IOException
         {
-            string responseText = makeRequest(PREKEY_METADATA_PATH, "GET", null);
-            PreKeyStatus preKeyStatus = JsonUtil.fromJson<PreKeyStatus>(responseText);
+            string responseText = MakeServiceRequest(PREKEY_METADATA_PATH, "GET", null);
+            PreKeyStatus preKeyStatus = JsonUtil.FromJson<PreKeyStatus>(responseText);
 
-            return preKeyStatus.getCount();
+            return preKeyStatus.Count;
         }
 
-        public List<PreKeyBundle> getPreKeys(SignalServiceAddress destination, uint deviceIdInteger)// throws IOException
+        public List<PreKeyBundle> GetPreKeys(SignalServiceAddress destination, uint deviceIdInteger)// throws IOException
         {
             try
             {
@@ -243,18 +216,18 @@ namespace libsignalservice.push
                 if (deviceId.Equals("1"))
                     deviceId = "*";
 
-                string path = string.Format(PREKEY_DEVICE_PATH, destination.getNumber(), deviceId);
+                string path = string.Format(PREKEY_DEVICE_PATH, destination.E164number, deviceId);
 
-                if (destination.getRelay().HasValue)
+                if (destination.Relay != null)
                 {
-                    path = path + "?relay=" + destination.getRelay().ForceGetValue();
+                    path = path + "?relay=" + destination.Relay;
                 }
 
-                string responseText = makeRequest(path, "GET", null);
-                PreKeyResponse response = JsonUtil.fromJson<PreKeyResponse>(responseText);
+                string responseText = MakeServiceRequest(path, "GET", null);
+                PreKeyResponse response = JsonUtil.FromJson<PreKeyResponse>(responseText);
                 List<PreKeyBundle> bundles = new List<PreKeyBundle>();
 
-                foreach (PreKeyResponseItem device in response.getDevices())
+                foreach (PreKeyResponseItem device in response.Devices)
                 {
                     ECPublicKey preKey = null;
                     ECPublicKey signedPreKey = null;
@@ -262,22 +235,22 @@ namespace libsignalservice.push
                     int preKeyId = -1;
                     int signedPreKeyId = -1;
 
-                    if (device.getSignedPreKey() != null)
+                    if (device.SignedPreKey != null)
                     {
-                        signedPreKey = device.getSignedPreKey().getPublicKey();
-                        signedPreKeyId = (int)device.getSignedPreKey().getKeyId(); // TODO: whacky
-                        signedPreKeySignature = device.getSignedPreKey().getSignature();
+                        signedPreKey = device.SignedPreKey.PublicKey;
+                        signedPreKeyId = (int)device.SignedPreKey.KeyId;
+                        signedPreKeySignature = device.SignedPreKey.Signature;
                     }
 
-                    if (device.getPreKey() != null)
+                    if (device.PreKey != null)
                     {
-                        preKeyId = (int)device.getPreKey().getKeyId();// TODO: whacky
-                        preKey = device.getPreKey().getPublicKey();
+                        preKeyId = (int)device.PreKey.KeyId;
+                        preKey = device.PreKey.PublicKey;
                     }
 
-                    bundles.Add(new PreKeyBundle(device.getRegistrationId(), device.getDeviceId(), (uint)preKeyId,
+                    bundles.Add(new PreKeyBundle(device.RegistrationId, device.DeviceId, (uint)preKeyId,
                                                          preKey, (uint)signedPreKeyId, signedPreKey, signedPreKeySignature,
-                                                         response.getIdentityKey()));// TODO: whacky
+                                                         response.IdentityKey));
                 }
 
                 return bundles;
@@ -288,50 +261,50 @@ namespace libsignalservice.push
             }*/
             catch (NotFoundException nfe)
             {
-                throw new UnregisteredUserException(destination.getNumber(), nfe);
+                throw new UnregisteredUserException(destination.E164number, nfe);
             }
         }
 
-        public PreKeyBundle getPreKey(SignalServiceAddress destination, uint deviceId)// throws IOException
+        public PreKeyBundle GetPreKey(SignalServiceAddress destination, uint deviceId)// throws IOException
         {
             try
             {
-                string path = string.Format(PREKEY_DEVICE_PATH, destination.getNumber(),
+                string path = string.Format(PREKEY_DEVICE_PATH, destination.E164number,
                                             deviceId.ToString());
 
-                if (destination.getRelay().HasValue)
+                if (destination.Relay != null)
                 {
-                    path = path + "?relay=" + destination.getRelay().ForceGetValue();
+                    path = path + "?relay=" + destination.Relay;
                 }
 
-                string responseText = makeRequest(path, "GET", null);
-                PreKeyResponse response = JsonUtil.fromJson<PreKeyResponse>(responseText);
+                string responseText = MakeServiceRequest(path, "GET", null);
+                PreKeyResponse response = JsonUtil.FromJson<PreKeyResponse>(responseText);
 
-                if (response.getDevices() == null || response.getDevices().Count < 1)
+                if (response.Devices == null || response.Devices.Count < 1)
                     throw new Exception("Empty prekey list");
 
-                PreKeyResponseItem device = response.getDevices()[0];
+                PreKeyResponseItem device = response.Devices[0];
                 ECPublicKey preKey = null;
                 ECPublicKey signedPreKey = null;
                 byte[] signedPreKeySignature = null;
                 int preKeyId = -1;
                 int signedPreKeyId = -1;
 
-                if (device.getPreKey() != null)
+                if (device.PreKey != null)
                 {
-                    preKeyId = (int)device.getPreKey().getKeyId();// TODO: whacky
-                    preKey = device.getPreKey().getPublicKey();
+                    preKeyId = (int)device.PreKey.KeyId;
+                    preKey = device.PreKey.PublicKey;
                 }
 
-                if (device.getSignedPreKey() != null)
+                if (device.SignedPreKey != null)
                 {
-                    signedPreKeyId = (int)device.getSignedPreKey().getKeyId();// TODO: whacky
-                    signedPreKey = device.getSignedPreKey().getPublicKey();
-                    signedPreKeySignature = device.getSignedPreKey().getSignature();
+                    signedPreKeyId = (int)device.SignedPreKey.KeyId;
+                    signedPreKey = device.SignedPreKey.PublicKey;
+                    signedPreKeySignature = device.SignedPreKey.Signature;
                 }
 
-                return new PreKeyBundle(device.getRegistrationId(), device.getDeviceId(), (uint)preKeyId, preKey,
-                                        (uint)signedPreKeyId, signedPreKey, signedPreKeySignature, response.getIdentityKey());
+                return new PreKeyBundle(device.RegistrationId, device.DeviceId, (uint)preKeyId, preKey,
+                                        (uint)signedPreKeyId, signedPreKey, signedPreKeySignature, response.IdentityKey);
             }
             /*catch (JsonUtil.JsonParseException e)
             {
@@ -339,16 +312,16 @@ namespace libsignalservice.push
             }*/
             catch (NotFoundException nfe)
             {
-                throw new UnregisteredUserException(destination.getNumber(), nfe);
+                throw new UnregisteredUserException(destination.E164number, nfe);
             }
         }
 
-        public SignedPreKeyEntity getCurrentSignedPreKey()// throws IOException
+        public SignedPreKeyEntity GetCurrentSignedPreKey()// throws IOException
         {
             try
             {
-                string responseText = makeRequest(SIGNED_PREKEY_PATH, "GET", null);
-                return JsonUtil.fromJson<SignedPreKeyEntity>(responseText);
+                string responseText = MakeServiceRequest(SIGNED_PREKEY_PATH, "GET", null);
+                return JsonUtil.FromJson<SignedPreKeyEntity>(responseText);
             }
             catch (/*NotFound*/Exception e)
             {
@@ -357,23 +330,23 @@ namespace libsignalservice.push
             }
         }
 
-        public bool setCurrentSignedPreKey(SignedPreKeyRecord signedPreKey)// throws IOException
+        public bool SetCurrentSignedPreKey(SignedPreKeyRecord signedPreKey)// throws IOException
         {
             SignedPreKeyEntity signedPreKeyEntity = new SignedPreKeyEntity(signedPreKey.getId(),
                                                                            signedPreKey.getKeyPair().getPublicKey(),
                                                                            signedPreKey.getSignature());
-            makeRequest(SIGNED_PREKEY_PATH, "PUT", JsonUtil.toJson(signedPreKeyEntity));
+            MakeServiceRequest(SIGNED_PREKEY_PATH, "PUT", JsonUtil.ToJson(signedPreKeyEntity));
             return true;
         }
 
-        public Tuple<ulong, byte[]> SendAttachment(PushAttachmentData attachment)// throws IOException
+        public (ulong id, byte[] digest) SendAttachment(PushAttachmentData attachment)// throws IOException
         {
-            var attachmentInfo = RetrieveAttachmentUploadUrl();
+            var (id, location) = RetrieveAttachmentUploadUrl();
 
-            byte[] digest = UploadAttachment("PUT", attachmentInfo.location, attachment.getData(),
-                attachment.getDataSize(), attachment.getKey());
+            byte[] digest = UploadAttachment("PUT", location, attachment.Data,
+                attachment.DataSize, attachment.OutputFactory, attachment.Listener);
 
-            return new Tuple<ulong, byte[]>(attachmentInfo.id, digest);
+            return (id, digest);
         }
 
         /// <summary>
@@ -382,22 +355,22 @@ namespace libsignalservice.push
         /// <returns>The attachment ID and the URL</returns>
         public (ulong id, string location) RetrieveAttachmentUploadUrl()
         {
-            string response = makeRequest(string.Format(ATTACHMENT_PATH, ""), "GET", null);
-            AttachmentDescriptor attachmentKey = JsonUtil.fromJson<AttachmentDescriptor>(response);
+            string response = MakeServiceRequest(string.Format(ATTACHMENT_PATH, ""), "GET", null);
+            AttachmentDescriptor attachmentKey = JsonUtil.FromJson<AttachmentDescriptor>(response);
 
-            if (attachmentKey == null || attachmentKey.getLocation() == null)
+            if (attachmentKey == null || attachmentKey.Location == null)
             {
                 throw new Exception("Server failed to allocate an attachment key!");
             }
 
-            Debug.WriteLine("Got attachment content location: " + attachmentKey.getLocation(), TAG);
-            return (attachmentKey.getId(), attachmentKey.getLocation());
+            Debug.WriteLine("Got attachment content location: " + attachmentKey.Location, TAG);
+            return (attachmentKey.Id, attachmentKey.Location);
         }
 
-        public void retrieveAttachment(string relay, ulong attachmentId, Stream tmpDestination, int maxSizeBytes)
+        public void RetrieveAttachment(string relay, ulong attachmentId, Stream tmpDestination, int maxSizeBytes)
         {
             string attachmentUrlLocation = RetrieveAttachmentDownloadUrl(relay, attachmentId);
-            downloadExternalFile(attachmentUrlLocation, tmpDestination);
+            DownloadAttachment(attachmentUrlLocation, tmpDestination);
         }
 
         /// <summary>
@@ -410,24 +383,24 @@ namespace libsignalservice.push
         {
             string path = string.Format(ATTACHMENT_PATH, attachmentId.ToString());
 
-            if (!Util.isEmpty(relay))
+            if (!Util.IsEmpty(relay))
             {
                 path = path + "?relay=" + relay;
             }
 
-            string response = makeRequest(path, "GET", null);
+            string response = MakeServiceRequest(path, "GET", null);
             Debug.WriteLine("PushServiceSocket: Received resp " + response);
-            AttachmentDescriptor descriptor = JsonUtil.fromJson<AttachmentDescriptor>(response);
-            Debug.WriteLine("PushServiceSocket: Attachment: " + attachmentId + " is at: " + descriptor.getLocation());
-            return descriptor.getLocation();
+            AttachmentDescriptor descriptor = JsonUtil.FromJson<AttachmentDescriptor>(response);
+            Debug.WriteLine("PushServiceSocket: Attachment: " + attachmentId + " is at: " + descriptor.Location);
+            return descriptor.Location;
         }
 
         public SignalServiceProfile RetrieveProfile(SignalServiceAddress target)
         {
             try
             {
-                string response = makeRequest(string.Format(PROFILE_PATH, target.getNumber()), "GET", null);
-                return JsonUtil.fromJson<SignalServiceProfile>(response);
+                string response = MakeServiceRequest(string.Format(PROFILE_PATH, target.E164number), "GET", null);
+                return JsonUtil.FromJson<SignalServiceProfile>(response);
             }
             catch (Exception e)
             {
@@ -435,46 +408,98 @@ namespace libsignalservice.push
             }
         }
 
-        public List<ContactTokenDetails> retrieveDirectory(ICollection<string> contactTokens) // TODO: whacky
+        public void RetrieveProfileAvatar(string path, FileStream destination, int maxSizeByzes)
+        {
+            DownloadFromCdn(destination, path, maxSizeByzes);
+        }
+
+        public void SetProfileName(string name)
+        {
+            MakeServiceRequest(string.Format(PROFILE_PATH, "name/" + (name == null ? "" : WebUtility.UrlEncode(name))), "PUT", "");
+        }
+
+        public void SetProfileAvatar(ProfileAvatarData profileAvatar)
+        {
+            String response = MakeServiceRequest(string.Format(PROFILE_PATH, "form/avatar"), "GET", null);
+            ProfileAvatarUploadAttributes formAttributes;
+
+            try
+            {
+                formAttributes = JsonUtil.FromJson<ProfileAvatarUploadAttributes>(response);
+            }
+            catch (IOException e)
+            {
+                throw new NonSuccessfulResponseCodeException("Unable to parse entity ("+e.Message+")");
+            }
+
+            if (profileAvatar != null) {
+                UploadToCdn(formAttributes.Acl, formAttributes.Key,
+                    formAttributes.Policy, formAttributes.Algorithm,
+                    formAttributes.Credential, formAttributes.Date,
+                    formAttributes.Signature, profileAvatar.InputData,
+                    profileAvatar.ContentType, profileAvatar.DataLength,
+                    profileAvatar.OutputStreamFactory);
+            }
+        }
+
+        private void DownloadFromCdn(Stream destination, string path, int maxSizeBytes)
+        {
+            SignalUrl signalUrl = GetRandom(SignalConnectionInformation.SignalCdnUrls);
+            string url = signalUrl.Url;
+            string hostHeader = signalUrl.HostHeader;
+            throw new NotImplementedException(); //TODO
+        }
+
+        private void UploadToCdn(string acl, string key, string policy, string algorithm, string credential, string date,
+            string signature, Stream inputData, string contentType, long dataLength, OutputStreamFactory outputStreamFactory)
+        {
+            SignalUrl signalUrl = GetRandom(SignalConnectionInformation.SignalCdnUrls);
+            string url = signalUrl.Url;
+            string hostHeader = signalUrl.HostHeader;
+            throw new NotImplementedException(); //TODO
+        }
+
+        public List<ContactTokenDetails> RetrieveDirectory(ICollection<string> contactTokens) // TODO: whacky
                                                                                               //throws NonSuccessfulResponseCodeException, PushNetworkException
         {
             LinkedList<HashSet<string>> temp = new LinkedList<HashSet<string>>();
             ContactTokenList contactTokenList = new ContactTokenList(contactTokens.ToList());
-            string response = makeRequest(DIRECTORY_TOKENS_PATH, "PUT", JsonUtil.toJson(contactTokenList));
-            ContactTokenDetailsList activeTokens = JsonUtil.fromJson<ContactTokenDetailsList>(response);
+            string response = MakeServiceRequest(DIRECTORY_TOKENS_PATH, "PUT", JsonUtil.ToJson(contactTokenList));
+            ContactTokenDetailsList activeTokens = JsonUtil.FromJson<ContactTokenDetailsList>(response);
 
-            return activeTokens.getContacts();
+            return activeTokens.Contacts;
         }
 
-        public ContactTokenDetails getContactTokenDetails(string contactToken)// throws IOException
+        public ContactTokenDetails GetContactTokenDetails(string contactToken)// throws IOException
         {
             try
             {
-                string response = makeRequest(string.Format(DIRECTORY_VERIFY_PATH, contactToken), "GET", null);
-                return JsonUtil.fromJson<ContactTokenDetails>(response);
+                string response = MakeServiceRequest(string.Format(DIRECTORY_VERIFY_PATH, contactToken), "GET", null);
+                return JsonUtil.FromJson<ContactTokenDetails>(response);
             }
-            catch (/*NotFound*/Exception nfe)
+            catch (Exception)
             {
                 return null;
             }
         }
 
-        public TurnServerInfo getTurnServerInfo()
+        public async Task<TurnServerInfo> GetTurnServerInfo(CancellationToken token)
+        {
+            string response = await MakeServiceRequestAsync(token, TURN_SERVER_INFO, "GET", null);
+            return JsonUtil.FromJson<TurnServerInfo>(response);
+        }
+
+        public void SetSoTimeoutMillis(long soTimeoutMillis)
         {
             throw new NotImplementedException();
         }
 
-        public void setSoTimeoutMillis(long soTimeoutMillis)
+        public void CancelInFlightRequests()
         {
             throw new NotImplementedException();
         }
 
-        public void cancelInFlightRequests()
-        {
-            throw new NotImplementedException();
-        }
-
-        private void downloadExternalFile(string url, Stream localDestination)
+        private void DownloadAttachment(string url, Stream localDestination)
         {
             try
             {
@@ -495,6 +520,7 @@ namespace libsignalservice.push
                         if (read == 0)
                         {
                             Debug.WriteLine("PushServiceSocket Downloaded: " + url + " to: " + localDestination);
+                            localDestination.Flush();
                             return;
                         }
                         localDestination.Write(buffer, 0, read);
@@ -509,15 +535,15 @@ namespace libsignalservice.push
             }
         }
 
-        private byte[] UploadAttachment(string method, string url, Stream data, ulong dataSize, byte[] key) //throws IOException
+        private byte[] UploadAttachment(string method, string url, Stream data, long dataSize,
+            OutputStreamFactory outputStreamFactory, IProgressListener listener)
         {
-            var result = EncryptAttachment(data, key);
-
-            // Finally upload the encrypted file
-            StreamContent streamContent = new StreamContent(result.encryptedData);
+            MemoryStream tmpStream = new MemoryStream();
+            DigestingOutputStream outputStream = outputStreamFactory.CreateFor(tmpStream);
+            StreamContent streamContent = new StreamContent(tmpStream);
             var request = new HttpRequestMessage(HttpMethod.Put, url);
             request.Content = streamContent;
-            request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
             request.Headers.ConnectionClose = true;
 
             HttpClient client = new HttpClient();
@@ -527,7 +553,7 @@ namespace libsignalservice.push
                 throw new IOException($"Bad response: {response.StatusCode} {response.Content.ReadAsStringAsync().Result}");
             }
 
-            return result.digest;
+            return outputStream.GetTransmittedDigest();
         }
 
         /// <summary>
@@ -544,7 +570,7 @@ namespace libsignalservice.push
             // This is the final digest
             byte[] digest = new byte[0];
 
-            byte[][] keyParts = Util.split(key, 32, 32);
+            byte[][] keyParts = Util.Split(key, 32, 32);
             using (var mac = new HMACSHA256())
             {
                 using (var cipher = Aes.Create())
@@ -590,10 +616,23 @@ namespace libsignalservice.push
             return (digest, encryptedData);
         }
 
-        private string makeRequest(string urlFragment, string method, string body)
+        private string MakeServiceRequest(string urlFragment, string method, string body)
+        {
+            try
+            {
+                var dummy = new CancellationTokenSource();
+                return MakeServiceRequestAsync(dummy.Token, urlFragment, method, body).Result;
+            }
+            catch (AggregateException e)
+            {
+                throw e.InnerException;
+            }
+        }
+
+        private async Task<string> MakeServiceRequestAsync(CancellationToken token, string urlFragment, string method, string body)
         //throws NonSuccessfulResponseCodeException, PushNetworkException
         {
-            HttpResponseMessage connection = getConnection(urlFragment, method, body);
+            HttpResponseMessage connection = await GetServiceConnectionAsync(token, urlFragment, method, body);
             HttpStatusCode responseCode;
             string responseMessage;
             string responseBody;
@@ -602,7 +641,7 @@ namespace libsignalservice.push
             {
                 responseCode = connection.StatusCode;
                 responseMessage = connection.ReasonPhrase;
-                responseBody = connection.Content.ReadAsStringAsync().Result;
+                responseBody = await connection.Content.ReadAsStringAsync();
             }
             catch (Exception ioe)
             {
@@ -611,20 +650,20 @@ namespace libsignalservice.push
                 throw new PushNetworkException(ioe);
             }
 
-            switch (responseCode)
+            switch ((uint)responseCode)
             {
-                case HttpStatusCode.RequestEntityTooLarge: // 413
+                case 413: // HttpStatusCode.RequestEntityTooLarge
                     throw new RateLimitException("Rate limit exceeded: " + responseCode);
-                case HttpStatusCode.Unauthorized: // 401
-                case HttpStatusCode.Forbidden: // 403
+                case 401: // HttpStatusCode.Unauthorized
+                case 403: // HttpStatusCode.Forbidden
                     throw new AuthorizationFailedException("Authorization failed!");
-                case HttpStatusCode.NotFound: // 404
+                case 404: // HttpStatusCode.NotFound
                     throw new NotFoundException("Not found");
-                case HttpStatusCode.Conflict: // 409
+                case 409: // HttpStatusCode.Conflict
                     MismatchedDevices mismatchedDevices = null;
                     try
                     {
-                        mismatchedDevices = JsonUtil.fromJson<MismatchedDevices>(responseBody);
+                        mismatchedDevices = JsonUtil.FromJson<MismatchedDevices>(responseBody);
                     }
                     catch (Exception e)
                     {
@@ -633,11 +672,11 @@ namespace libsignalservice.push
                         throw new PushNetworkException(e);
                     }
                     throw new MismatchedDevicesException(mismatchedDevices);
-                case HttpStatusCode.Gone: // 410
+                case 410: // HttpStatusCode.Gone
                     StaleDevices staleDevices = null;
                     try
                     {
-                        staleDevices = JsonUtil.fromJson<StaleDevices>(responseBody);
+                        staleDevices = JsonUtil.FromJson<StaleDevices>(responseBody);
                     }
                     catch (Exception e)
                     {
@@ -646,21 +685,30 @@ namespace libsignalservice.push
                         throw new PushNetworkException(e);
                     }
                     throw new StaleDevicesException(staleDevices);
-                case HttpStatusCode.LengthRequired://411:
+                case 411: //HttpStatusCode.LengthRequired
                     DeviceLimit deviceLimit = null;
                     try
                     {
-                        deviceLimit = JsonUtil.fromJson<DeviceLimit>(responseBody);
+                        deviceLimit = JsonUtil.FromJson<DeviceLimit>(responseBody);
                     }
                     catch (Exception e)
                     {
-                        Debug.WriteLine(e);
-                        Debug.WriteLine(e.StackTrace);
                         throw new PushNetworkException(e);
                     }
                     throw new DeviceLimitExceededException(deviceLimit);
-                case HttpStatusCode.ExpectationFailed: // 417
+                case 417: // HttpStatusCode.ExpectationFailed
                     throw new ExpectationFailedException();
+                case 423:
+                    RegistrationLockFailure accountLockFailure;
+                    try
+                    {
+                        accountLockFailure = JsonUtil.FromJson<RegistrationLockFailure>(responseBody);
+                    }
+                    catch (Exception e)
+                    {
+                        throw new PushNetworkException(e);
+                    }
+                    throw new LockedException(accountLockFailure.Length, accountLockFailure.TimeRemaining);
             }
 
             if (responseCode != HttpStatusCode.OK && responseCode != HttpStatusCode.NoContent) // 200 & 204
@@ -671,6 +719,7 @@ namespace libsignalservice.push
 
             return responseBody;
         }
+
 #if NETCOREAPP2_1
         private byte[] server_cert_raw;
         private bool ServerCertificateCustomValidationCallback(HttpRequestMessage message, X509Certificate2 cert, X509Chain chain, SslPolicyErrors policy)
@@ -678,13 +727,14 @@ namespace libsignalservice.push
             return cert.GetRawCertData().SequenceEqual(server_cert_raw);
         }
 #endif
-        private HttpResponseMessage getConnection(string urlFragment, string method, string body)
+
+        private async Task<HttpResponseMessage> GetServiceConnectionAsync(CancellationToken token, string urlFragment, string method, string body)
         {
             try
             {
-                SignalConnectionInformation connectionInformation = getRandom(signalConnectionInformation);
-                string url = connectionInformation.getUrl();
-                May<string> hostHeader = connectionInformation.getHostHeader();
+                SignalUrl signalUrl = GetRandom(SignalConnectionInformation.SignalServiceUrls);
+                string url = signalUrl.Url;
+                string hostHeader = signalUrl.HostHeader;
                 Uri uri = new Uri(string.Format("{0}{1}", url, urlFragment));
                 Debug.WriteLine("{0}: Uri {1}", TAG, uri);
                 HttpClient connection;
@@ -699,28 +749,27 @@ namespace libsignalservice.push
 
                 var headers = connection.DefaultRequestHeaders;
 
-                if (credentialsProvider.GetPassword() != null)
+                if (CredentialsProvider.Password != null)
                 {
-                    string authHeader = getAuthorizationHeader();
+                    string authHeader = GetAuthorizationHeader(CredentialsProvider);
                     Debug.WriteLine(String.Format("Authorization: {0}", authHeader), TAG);
                     headers.Add("Authorization", authHeader);
                 }
 
-                if (userAgent != null)
+                if (UserAgent != null)
                 {
-                    headers.Add("X-Signal-Agent", userAgent);
+                    headers.Add("X-Signal-Agent", UserAgent);
                 }
 
-                if (hostHeader.HasValue)
+                if (hostHeader != null)
                 {
-                    headers.Host = hostHeader.ForceGetValue();
+                    headers.Host = hostHeader;
                 }
 
                 StringContent content;
                 if (body != null)
                 {
                     content = new StringContent(body, Encoding.UTF8, "application/json");
-                    Debug.WriteLine(body);
                 }
                 else
                 {
@@ -729,16 +778,16 @@ namespace libsignalservice.push
                 switch (method)
                 {
                     case "POST":
-                        return connection.PostAsync(uri, content).Result;
+                        return await connection.PostAsync(uri, content, token);
 
                     case "PUT":
-                        return connection.PutAsync(uri, content).Result;
+                        return await connection.PutAsync(uri, content, token);
 
                     case "DELETE":
-                        return connection.DeleteAsync(uri).Result;
+                        return await connection.DeleteAsync(uri, token);
 
                     case "GET":
-                        return connection.GetAsync(uri).Result;
+                        return await connection.GetAsync(uri, token);
 
                     default:
                         throw new Exception("Unknown method: " + method);
@@ -753,19 +802,19 @@ namespace libsignalservice.push
             }
         }
 
-        private string getAuthorizationHeader()
+        private string GetAuthorizationHeader(CredentialsProvider provider)
         {
-            if (credentialsProvider.GetDeviceId() == SignalServiceAddress.DEFAULT_DEVICE_ID)
+            if (provider.DeviceId == SignalServiceAddress.DEFAULT_DEVICE_ID)
             {
-                return "Basic " + Base64.encodeBytes(Encoding.UTF8.GetBytes((credentialsProvider.GetUser() + ":" + credentialsProvider.GetPassword())));
+                return "Basic " + Base64.EncodeBytes(Encoding.UTF8.GetBytes((provider.User + ":" + provider.Password)));
             }
             else
             {
-                return "Basic " + Base64.encodeBytes(Encoding.UTF8.GetBytes((credentialsProvider.GetUser() + "." + credentialsProvider.GetDeviceId() + ":" + credentialsProvider.GetPassword())));
+                return "Basic " + Base64.EncodeBytes(Encoding.UTF8.GetBytes((provider.User + "." + provider.DeviceId + ":" + provider.Password)));
             }
         }
 
-        private SignalConnectionInformation getRandom(SignalConnectionInformation[] connections)
+        private SignalUrl GetRandom(SignalUrl[] connections)
         {
             return connections[Util.generateRandomNumber() % connections.Length];
         }
@@ -773,73 +822,48 @@ namespace libsignalservice.push
 
     internal class GcmRegistrationId
     {
-        [JsonProperty]
-        private string wnsRegistrationId;
+        [JsonProperty("wnsRegistrationId")]
+        public string WnsRegistrationId { get; }
 
-        [JsonProperty]
-        private bool webSocketChannel;
-
-        public GcmRegistrationId()
-        {
-        }
+        [JsonProperty("webSocketChannel")]
+        public bool WebSocketChannel { get; }
 
         public GcmRegistrationId(string wnsRegistrationId, bool webSocketChannel)
         {
-            this.wnsRegistrationId = wnsRegistrationId;
-            this.webSocketChannel = webSocketChannel;
+            WnsRegistrationId = wnsRegistrationId;
+            WebSocketChannel = webSocketChannel;
         }
+    }
+
+    internal class RegistrationLock
+    {
+        [JsonProperty("pin")]
+        public string Pin { get; }
+
+        public RegistrationLock(string pin)
+        {
+            Pin = pin;
+        }
+    }
+
+    internal class RegistrationLockFailure
+    {
+        [JsonProperty("length")]
+        public int Length { get; private set; }
+        [JsonProperty("timeRemaining")]
+        public long TimeRemaining { get; private set; }
+
+        public RegistrationLockFailure() { }
     }
 
     internal class AttachmentDescriptor
     {
-        [JsonProperty]
-        private ulong id;
+        [JsonProperty("id")]
+        public ulong Id { get; set; }
 
-        [JsonProperty]
-        private string location;
+        [JsonProperty("location")]
+        public string Location { get; set; }
 
-        public ulong getId()
-        {
-            return id;
-        }
-
-        public string getLocation()
-        {
-            return location;
-        }
-    }
-
-    internal class SignalConnectionInformation
-    {
-        private readonly string url;
-        private readonly May<string> hostHeader;
-        //private readonly TrustManager[] trustManagers;
-
-        public SignalConnectionInformation(SignalServiceUrl signalServiceUrl)
-        {
-            this.url = signalServiceUrl.getUrl();
-            this.hostHeader = signalServiceUrl.getHostHeader();
-            //this.trustManagers = BlacklistingTrustManager.createFor(signalServiceUrl.getTrustStore());
-        }
-
-        public string getUrl()
-        {
-            return url;
-        }
-
-        public May<string> getHostHeader()
-        {
-            return hostHeader;
-        }
-
-        //TrustManager[] getTrustManagers()
-        //{
-        //    return trustManagers;
-        //}
-
-        //public May<ConnectionSpec> getConnectionSpec()
-        //{
-        //    return connectionSpec;
-        //}
+        public AttachmentDescriptor() { }
     }
 }

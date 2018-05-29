@@ -1,6 +1,7 @@
 using Google.Protobuf;
 using libsignal.push;
 using libsignalservice.messages;
+using libsignalservice.profiles;
 using libsignalservice.push;
 using libsignalservice.util;
 using libsignalservice.websocket;
@@ -31,7 +32,7 @@ namespace libsignalservice
             this.Token = token;
             this.Websocket = websocket;
             this.CredentialsProvider = credentialsProvider;
-            this.Websocket.Connect();
+            this.Websocket.Connect(token).Wait();
         }
 
         /// <summary>
@@ -45,7 +46,7 @@ namespace libsignalservice
 
             if (IsSignalServiceEnvelope(request))
             {
-                SignalServiceMessagePipeMessage message = new SignalServiceEnvelope(request.Body.ToByteArray(), CredentialsProvider.GetSignalingKey());
+                SignalServiceMessagePipeMessage message = new SignalServiceEnvelope(request.Body.ToByteArray(), CredentialsProvider.SignalingKey);
                 WebSocketResponseMessage response = CreateWebSocketResponse(request);
                 try
                 {
@@ -82,10 +83,10 @@ namespace libsignalservice
             Logger.LogTrace("Send()");
             WebSocketRequestMessage requestmessage = new WebSocketRequestMessage()
             {
-                Id = BitConverter.ToUInt64(Util.getSecretBytes(sizeof(long)), 0),
+                Id = BitConverter.ToUInt64(Util.GetSecretBytes(sizeof(long)), 0),
                 Verb = "PUT",
-                Path = $"/v1/messages/{list.getDestination()}",
-                Body = ByteString.CopyFrom(Encoding.UTF8.GetBytes(JsonUtil.toJson(list)))
+                Path = $"/v1/messages/{list.Destination}",
+                Body = ByteString.CopyFrom(Encoding.UTF8.GetBytes(JsonUtil.ToJson(list)))
             };
             requestmessage.Headers.Add("content-type:application/json");
             Logger.LogDebug("Sending message {0}", requestmessage.Id);
@@ -99,7 +100,7 @@ namespace libsignalservice
                     Logger.LogError("Sending message {0} failed: {1}", requestmessage.Id, response.Item2);
                     throw new IOException("non-successfull response: " + response.Item1 + " " + response.Item2);
                 }
-                return JsonUtil.fromJson<SendMessageResponse>(response.Item2);
+                return JsonUtil.FromJson<SendMessageResponse>(response.Item2);
             }
             else
             {
@@ -118,9 +119,9 @@ namespace libsignalservice
             Logger.LogTrace("GetProfile()");
             WebSocketRequestMessage requestMessage = new WebSocketRequestMessage()
             {
-                Id = BitConverter.ToUInt64(Util.getSecretBytes(sizeof(long)), 0),
+                Id = BitConverter.ToUInt64(Util.GetSecretBytes(sizeof(long)), 0),
                 Verb = "GET",
-                Path = $"/v1/profile/{address.getNumber()}"
+                Path = $"/v1/profile/{address.E164number}"
             };
 
             var t = Websocket.SendRequest(requestMessage);
@@ -132,7 +133,7 @@ namespace libsignalservice
                 {
                     throw new IOException("non-successfull response: " + response.Item1 + " " + response.Item2);
                 }
-                return JsonUtil.fromJson<SignalServiceProfile>(response.Item2);
+                return JsonUtil.FromJson<SignalServiceProfile>(response.Item2);
             }
             else
             {
