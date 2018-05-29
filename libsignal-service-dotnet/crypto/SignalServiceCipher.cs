@@ -52,12 +52,35 @@ namespace libsignalservice.crypto
             return new OutgoingPushMessage(type, destination.DeviceId, remoteRegistrationId, body, silent);
         }
 
-        /// <summary>
-        /// Decrypt a received <see cref="SignalServiceEnvelope"/>
-        /// </summary>
-        /// <param name="envelope">The received SignalServiceEnvelope</param>
-        /// <returns>a decrypted SignalServiceContent</returns>
-        public SignalServiceContent DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data)
+		/// <summary>
+		/// Decrypt a received <see cref="SignalServiceEnvelope"/>
+		/// </summary>
+		/// <param name="envelope">The received SignalServiceEnvelope</param>
+		/// <returns>a decrypted SignalServiceContent</returns>
+		public SignalServiceContent Decrypt(SignalServiceEnvelope envelope, Action<SignalServiceContent> callback = null) {
+			Action<byte[]> callback_func = null;
+			if (callback != null) {
+				callback_func = (data) => callback(DecryptComplete(envelope, data));
+			}
+
+			try {
+				SignalServiceContent content = new SignalServiceContent();
+				byte[] decrypted_data = null;
+
+				if (envelope.HasLegacyMessage()) {
+					decrypted_data = Decrypt(envelope, envelope.GetLegacyMessage(), callback_func);
+				} else if (envelope.HasContent()) {
+					decrypted_data = Decrypt(envelope, envelope.GetContent(), callback_func);
+				}
+				if (callback_func != null) {
+					return null;
+				}
+				return DecryptComplete(envelope, decrypted_data);
+			} catch (InvalidProtocolBufferException e) {
+				throw new InvalidMessageException(e);
+			}
+		}
+		private SignalServiceContent DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data)
         {
             try
             {
