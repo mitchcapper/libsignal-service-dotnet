@@ -1,5 +1,6 @@
 using Google.Protobuf;
 using libsignal;
+using libsignal.messages.multidevice;
 using libsignal.protocol;
 using libsignal.state;
 using libsignal_service_dotnet.messages.calls;
@@ -8,51 +9,36 @@ using libsignalservice.messages.multidevice;
 using libsignalservice.push;
 using libsignalservice.util;
 
-/**
- * Copyright (C) 2015-2017 smndtrl, golf1052
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
 using System;
 using System.Collections.Generic;
+using static libsignalservice.messages.SignalServiceDataMessage;
+using static libsignalservice.push.DataMessage;
 
 namespace libsignalservice.crypto
 {
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
     /// <summary>
     /// This is used to decrypt received <see cref="SignalServiceEnvelope"/>s
     /// </summary>
     public class SignalServiceCipher
     {
-        private static readonly string TAG = "SignalServiceCipher";
-
-        private readonly SignalProtocolStore signalProtocolStore;
-        private readonly SignalServiceAddress localAddress;
+        private readonly SignalProtocolStore SignalProtocolStore;
+        private readonly SignalServiceAddress LocalAddress;
 
         public SignalServiceCipher(SignalServiceAddress localAddress, SignalProtocolStore signalProtocolStore)
         {
-            this.signalProtocolStore = signalProtocolStore;
-            this.localAddress = localAddress;
+            this.SignalProtocolStore = signalProtocolStore;
+            this.LocalAddress = localAddress;
         }
 
-        public OutgoingPushMessage encrypt(SignalProtocolAddress destination, byte[] unpaddedMessage, bool silent)
+
+        public OutgoingPushMessage Encrypt(SignalProtocolAddress destination, byte[] unpaddedMessage, bool silent)
         {
-            SessionCipher sessionCipher = new SessionCipher(signalProtocolStore, destination);
+            SessionCipher sessionCipher = new SessionCipher(SignalProtocolStore, destination);
             PushTransportDetails transportDetails = new PushTransportDetails(sessionCipher.getSessionVersion());
             CiphertextMessage message = sessionCipher.encrypt(transportDetails.getPaddedMessageBody(unpaddedMessage));
             uint remoteRegistrationId = sessionCipher.getRemoteRegistrationId();
-            String body = Base64.encodeBytes(message.serialize());
+            String body = Base64.EncodeBytes(message.serialize());
 
             uint type;
 
@@ -65,70 +51,61 @@ namespace libsignalservice.crypto
 
             return new OutgoingPushMessage(type, destination.DeviceId, remoteRegistrationId, body, silent);
         }
-		private SignalServiceContent DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data) {
-			try {
-				SignalServiceContent content = new SignalServiceContent();
 
-				if (envelope.hasLegacyMessage()) {
-					DataMessage message = DataMessage.Parser.ParseFrom(decrypted_data);
-					content = new SignalServiceContent() {
-						Message = createSignalServiceMessage(envelope, message)
-					};
-				} else if (envelope.hasContent()) {
-					Content message = Content.Parser.ParseFrom(decrypted_data);
-
-					if (message.DataMessageOneofCase == Content.DataMessageOneofOneofCase.DataMessage) {
-						content = new SignalServiceContent() {
-							Message = createSignalServiceMessage(envelope, message.DataMessage)
-						};
-					} else if (message.SyncMessageOneofCase == Content.SyncMessageOneofOneofCase.SyncMessage && localAddress.getNumber().Equals(envelope.getSource())) {
-						content = new SignalServiceContent() {
-							SynchronizeMessage = createSynchronizeMessage(envelope, message.SyncMessage)
-						};
-					} else if (message.CallMessageOneofCase == Content.CallMessageOneofOneofCase.CallMessage) {
-						content = new SignalServiceContent() {
-							CallMessage = createCallMessage(message.CallMessage)
-						};
-					}
-				}
-
-				return content;
-			} catch (InvalidProtocolBufferException e) {
-				throw new InvalidMessageException(e);
-			}
-		}
-		/// <summary>
-		/// Decrypt a received <see cref="SignalServiceEnvelope"/>
-		/// </summary>
-		/// <param name="envelope">The received SignalServiceEnvelope</param>
-		/// <param name="callback">Optional callback to call during decryption rather than after, instead of returning SignalServiceContent</param>
-		/// <returns>a decrypted SignalServiceContent</returns>
-		public SignalServiceContent decrypt(SignalServiceEnvelope envelope, Action<SignalServiceContent> callback=null)
+        /// <summary>
+        /// Decrypt a received <see cref="SignalServiceEnvelope"/>
+        /// </summary>
+        /// <param name="envelope">The received SignalServiceEnvelope</param>
+        /// <returns>a decrypted SignalServiceContent</returns>
+        public SignalServiceContent DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data)
         {
-			Action<byte[]> callback_func=null;
-			if (callback != null) 
-			{
-				callback_func = (data) => callback(DecryptComplete(envelope, data));
-			}
-
-			try
+            try
             {
                 SignalServiceContent content = new SignalServiceContent();
-				byte[] decrypted_data=null;
 
-				if (envelope.hasLegacyMessage())
+                if (envelope.HasLegacyMessage())
                 {
-					decrypted_data = decrypt(envelope, envelope.getLegacyMessage(), callback_func);
+                    DataMessage message = DataMessage.Parser.ParseFrom(Decrypt(envelope, envelope.GetLegacyMessage()));
+                    content = new SignalServiceContent()
+                    {
+                        Message = CreateSignalServiceMessage(envelope, message)
+                    };
                 }
-                else if (envelope.hasContent())
+                else if (envelope.HasContent())
                 {
-					decrypted_data = decrypt(envelope, envelope.getContent(), callback_func);
-				}
-				if (callback_func != null)
-				{
-					return null;
-				}
-                return DecryptComplete(envelope, decrypted_data);
+                    Content message = Content.Parser.ParseFrom(Decrypt(envelope, envelope.GetContent()));
+
+                    if (message.DataMessageOneofCase == Content.DataMessageOneofOneofCase.DataMessage)
+                    {
+                        content = new SignalServiceContent()
+                        {
+                            Message = CreateSignalServiceMessage(envelope, message.DataMessage)
+                        };
+                    }
+                    else if (message.SyncMessageOneofCase == Content.SyncMessageOneofOneofCase.SyncMessage && LocalAddress.E164number == envelope.GetSource())
+                    {
+                        content = new SignalServiceContent()
+                        {
+                            SynchronizeMessage = CreateSynchronizeMessage(envelope, message.SyncMessage)
+                        };
+                    }
+                    else if (message.CallMessageOneofCase == Content.CallMessageOneofOneofCase.CallMessage)
+                    {
+                        content = new SignalServiceContent()
+                        {
+                            CallMessage = CreateCallMessage(message.CallMessage)
+                        };
+                    }
+                    else if (message.ReceiptMessageOneofCase == Content.ReceiptMessageOneofOneofCase.ReceiptMessage)
+                    {
+                        content = new SignalServiceContent()
+                        {
+                            ReadMessage = CreateReceiptMessage(envelope, message.ReceiptMessage)
+                        };
+                    }
+                }
+
+                return content;
             }
             catch (InvalidProtocolBufferException e)
             {
@@ -143,90 +120,93 @@ namespace libsignalservice.crypto
 			public Action<byte[]> callback;
 		}
 
-		private byte[] decrypt(SignalServiceEnvelope envelope, byte[] ciphertext, Action<byte[]> callback=null)
+        private byte[] Decrypt(SignalServiceEnvelope envelope, byte[] ciphertext, Action<byte[]> callback=null)
 
         {
-            SignalProtocolAddress sourceAddress = new SignalProtocolAddress(envelope.getSource(), (uint)envelope.getSourceDevice());
-            SessionCipher sessionCipher = new SessionCipher(signalProtocolStore, sourceAddress);
+            SignalProtocolAddress sourceAddress = new SignalProtocolAddress(envelope.GetSource(), (uint)envelope.GetSourceDevice());
+            SessionCipher sessionCipher = new SessionCipher(SignalProtocolStore, sourceAddress);
 
             byte[] paddedMessage;
 			DecryptionCallbackHandler callback_handler = null;
 			if (callback != null)
 				callback_handler = new DecryptionCallbackHandler {callback=callback,sessionCipher=sessionCipher };
 
-			if (envelope.isPreKeySignalMessage())
+            if (envelope.IsPreKeySignalMessage())
             {
 				if (callback_handler != null) {
 					sessionCipher.decrypt(new PreKeySignalMessage(ciphertext),callback_handler);
 					return null;
 				}
-				paddedMessage = sessionCipher.decrypt(new PreKeySignalMessage(ciphertext));
+                paddedMessage = sessionCipher.decrypt(new PreKeySignalMessage(ciphertext));
             }
-            else if (envelope.isSignalMessage())
+            else if (envelope.IsSignalMessage())
             {
 				if (callback_handler != null) {
 					sessionCipher.decrypt(new SignalMessage(ciphertext), callback_handler);
 					return null;
 				}
-				paddedMessage = sessionCipher.decrypt(new SignalMessage(ciphertext));
+                paddedMessage = sessionCipher.decrypt(new SignalMessage(ciphertext));
             }
             else
             {
-                throw new InvalidMessageException("Unknown type: " + envelope.getType() + " from " + envelope.getSource());
+                throw new InvalidMessageException("Unknown type: " + envelope.GetEnvelopeType() + " from " + envelope.GetSource());
             }
             return GetStrippedMessage(sessionCipher, paddedMessage);
         }
 		private static byte[] GetStrippedMessage(SessionCipher sessionCipher, byte[] paddedMessage) {
-			PushTransportDetails transportDetails = new PushTransportDetails(sessionCipher.getSessionVersion());
-			return transportDetails.getStrippedPaddingMessageBody(paddedMessage);
-		}
 
-        private SignalServiceDataMessage createSignalServiceMessage(SignalServiceEnvelope envelope, DataMessage content)
+            PushTransportDetails transportDetails = new PushTransportDetails(sessionCipher.getSessionVersion());
+            return transportDetails.GetStrippedPaddingMessageBody(paddedMessage);
+        }
+
+        private SignalServiceDataMessage CreateSignalServiceMessage(SignalServiceEnvelope envelope, DataMessage content)
         {
-            SignalServiceGroup groupInfo = createGroupInfo(envelope, content);
+            SignalServiceGroup groupInfo = CreateGroupInfo(envelope, content);
             List<SignalServiceAttachment> attachments = new List<SignalServiceAttachment>();
             bool endSession = ((content.Flags & (uint)DataMessage.Types.Flags.EndSession) != 0);
             bool expirationUpdate = ((content.Flags & (uint)DataMessage.Types.Flags.ExpirationTimerUpdate) != 0);
+            bool profileKeyUpdate = ((content.Flags & (uint)DataMessage.Types.Flags.ProfileKeyUpdate) != 0);
+            SignalServiceDataMessage.SignalServiceQuote quote = CreateQuote(envelope, content);
 
             foreach (AttachmentPointer pointer in content.Attachments)
             {
-                attachments.Add(new SignalServiceAttachmentPointer(pointer.Id,
-                                                                pointer.ContentType,
-                                                                pointer.Key.ToByteArray(),
-                                                                envelope.getRelay(),
-                                                                pointer.SizeOneofCase == AttachmentPointer.SizeOneofOneofCase.Size ? pointer.Size : 0,
-                                                                pointer.ThumbnailOneofCase == AttachmentPointer.ThumbnailOneofOneofCase.Thumbnail ? pointer.Thumbnail.ToByteArray() : null,
-                                                                pointer.DigestOneofCase == AttachmentPointer.DigestOneofOneofCase.Digest ? pointer.Digest.ToByteArray() : null,
-                                                                pointer.FileNameOneofCase == AttachmentPointer.FileNameOneofOneofCase.FileName ? pointer.FileName : null,
-                                                                pointer.FlagsOneofCase == AttachmentPointer.FlagsOneofOneofCase.Flags && (pointer.Flags & (uint) AttachmentPointer.Types.Flags.VoiceMessage) != 0));
+                attachments.Add(CreateAttachmentPointer(envelope.GetRelay(), pointer));
+            }
+
+            if (content.TimestampOneofCase == DataMessage.TimestampOneofOneofCase.Timestamp && (long) content.Timestamp != envelope.GetTimestamp())
+            {
+                throw new InvalidMessageException("Timestamps don't match: " + content.Timestamp + " vs " + envelope.GetTimestamp());
             }
 
             return new SignalServiceDataMessage()
             {
-                Timestamp = envelope.getTimestamp(),
+                Timestamp = envelope.GetTimestamp(),
                 Group = groupInfo,
                 Attachments = attachments,
                 Body = content.Body,
                 EndSession = endSession,
                 ExpiresInSeconds = (int)content.ExpireTimer,
-                ExpirationUpdate = expirationUpdate
+                ExpirationUpdate = expirationUpdate,
+                ProfileKey = content.ProfileKeyOneofCase == DataMessage.ProfileKeyOneofOneofCase.ProfileKey ? content.ProfileKey.ToByteArray() : null,
+                ProfileKeyUpdate = profileKeyUpdate,
+                Quote = quote
             };
         }
 
-        private SignalServiceSyncMessage createSynchronizeMessage(SignalServiceEnvelope envelope, SyncMessage content)
+        private SignalServiceSyncMessage CreateSynchronizeMessage(SignalServiceEnvelope envelope, SyncMessage content)
         {
             if (content.SentOneofCase == SyncMessage.SentOneofOneofCase.Sent)
             {
                 SyncMessage.Types.Sent sentContent = content.Sent;
-                return SignalServiceSyncMessage.forSentTranscript(new SentTranscriptMessage(sentContent.Destination,
+                return SignalServiceSyncMessage.ForSentTranscript(new SentTranscriptMessage(sentContent.Destination,
                                                                            (long)sentContent.Timestamp,
-                                                                           createSignalServiceMessage(envelope, sentContent.Message),
+                                                                           CreateSignalServiceMessage(envelope, sentContent.Message),
                                                                            (long)sentContent.ExpirationStartTimestamp));
             }
 
             if (content.RequestOneofCase == SyncMessage.RequestOneofOneofCase.Request)
             {
-                return SignalServiceSyncMessage.forRequest(new RequestMessage(content.Request));
+                return SignalServiceSyncMessage.ForRequest(new RequestMessage(content.Request));
             }
 
             if (content.Read.Count > 0)
@@ -238,7 +218,19 @@ namespace libsignalservice.crypto
                     readMessages.Add(new ReadMessage(read.Sender, (long)read.Timestamp));
                 }
 
-                return SignalServiceSyncMessage.forRead(readMessages);
+                return SignalServiceSyncMessage.ForRead(readMessages);
+            }
+
+            if (content.ContactsOneofCase == SyncMessage.ContactsOneofOneofCase.Contacts)
+            {
+                AttachmentPointer pointer = content.Contacts.Blob;
+                return SignalServiceSyncMessage.ForContacts(new ContactsMessage(CreateAttachmentPointer(envelope.GetRelay(), pointer), content.Contacts.Complete));
+            }
+
+            if (content.GroupsOneofCase == SyncMessage.GroupsOneofOneofCase.Groups)
+            {
+                AttachmentPointer pointer = content.Groups.Blob;
+                return SignalServiceSyncMessage.ForGroups(CreateAttachmentPointer(envelope.GetRelay(), pointer));
             }
 
             if (content.VerifiedOneofCase == SyncMessage.VerifiedOneofOneofCase.Verified)
@@ -268,7 +260,7 @@ namespace libsignalservice.crypto
                         throw new InvalidMessageException("Unknown state: " + verified.State);
                     }
 
-                    return SignalServiceSyncMessage.forVerified(new VerifiedMessage(destination, identityKey, verifiedState, Util.CurrentTimeMillis()));
+                    return SignalServiceSyncMessage.ForVerified(new VerifiedMessage(destination, identityKey, verifiedState, Util.CurrentTimeMillis()));
                 }
                 catch (InvalidKeyException e)
                 {
@@ -276,10 +268,10 @@ namespace libsignalservice.crypto
                 }
             }
 
-            return SignalServiceSyncMessage.empty();
+            return SignalServiceSyncMessage.Empty();
         }
 
-        private SignalServiceCallMessage createCallMessage(CallMessage content)
+        private SignalServiceCallMessage CreateCallMessage(CallMessage content)
         {
             if (content.OfferOneofCase == CallMessage.OfferOneofOneofCase.Offer)
             {
@@ -343,7 +335,83 @@ namespace libsignalservice.crypto
             return new SignalServiceCallMessage();
         }
 
-        private SignalServiceGroup createGroupInfo(SignalServiceEnvelope envelope, DataMessage content)
+        private SignalServiceReceiptMessage CreateReceiptMessage(SignalServiceEnvelope envelope, ReceiptMessage content)
+        {
+            SignalServiceReceiptMessage.Type type;
+
+            if (content.TypeOneofCase == ReceiptMessage.TypeOneofOneofCase.Type)
+            {
+                if (content.Type == ReceiptMessage.Types.Type.Delivery)
+                {
+                    type = SignalServiceReceiptMessage.Type.DELIVERY;
+                }
+                else if (content.Type == ReceiptMessage.Types.Type.Read)
+                {
+                    type = SignalServiceReceiptMessage.Type.READ;
+                }
+                else
+                {
+                    type = SignalServiceReceiptMessage.Type.UNKNOWN;
+                }
+            }
+            else
+            {
+                type = SignalServiceReceiptMessage.Type.UNKNOWN;
+            }
+            var timestamps = new List<ulong>();
+            foreach (var timestamp in content.Timestamp)
+            {
+                timestamps.Add(timestamp);
+            }
+            return new SignalServiceReceiptMessage()
+            {
+                ReceiptType = type,
+                Timestamps = timestamps,
+                When = envelope.GetTimestamp()
+            };
+        }
+
+        private SignalServiceDataMessage.SignalServiceQuote CreateQuote(SignalServiceEnvelope envelope, DataMessage content)
+        {
+            if (content.QuoteOneofCase != QuoteOneofOneofCase.Quote)
+                return null;
+
+            List<SignalServiceQuotedAttachment> attachments = new List<SignalServiceQuotedAttachment>();
+
+            foreach (var pointer in content.Quote.Attachments)
+            {
+                attachments.Add(new SignalServiceQuotedAttachment(pointer.ContentType,
+                    pointer.FileName,
+                    pointer.ThumbnailOneofCase == Types.Quote.Types.QuotedAttachment.ThumbnailOneofOneofCase.Thumbnail ? CreateAttachmentPointer(envelope.GetRelay(), pointer.Thumbnail) : null));
+            }
+
+            return new SignalServiceDataMessage.SignalServiceQuote((long) content.Quote.Id,
+                new SignalServiceAddress(content.Quote.Author),
+                content.Quote.Text,
+                attachments);
+        }
+
+        private SignalServiceAttachmentPointer CreateAttachmentPointer(string relay, AttachmentPointer pointer)
+        {
+            uint? size = null;
+            if (pointer.SizeOneofCase == AttachmentPointer.SizeOneofOneofCase.Size)
+            {
+                size = pointer.Size;
+            }
+            return new SignalServiceAttachmentPointer(pointer.Id,
+                pointer.ContentType,
+                pointer.Key.ToByteArray(),
+                relay,
+                size,
+                pointer.ThumbnailOneofCase == AttachmentPointer.ThumbnailOneofOneofCase.Thumbnail ? pointer.Thumbnail.ToByteArray() : null,
+                (int) pointer.Width,
+                (int) pointer.Height,
+                pointer.DigestOneofCase == AttachmentPointer.DigestOneofOneofCase.Digest ? pointer.Digest.ToByteArray() : null,
+                pointer.FileNameOneofCase == AttachmentPointer.FileNameOneofOneofCase.FileName ? pointer.FileName : null,
+                (pointer.Flags & (uint) AttachmentPointer.Types.Flags.VoiceMessage) != 0);
+        }
+
+        private SignalServiceGroup CreateGroupInfo(SignalServiceEnvelope envelope, DataMessage content)
         {
             if (content.GroupOneofCase == DataMessage.GroupOneofOneofCase.None) return null;
 
@@ -381,8 +449,11 @@ namespace libsignalservice.crypto
                     avatar = new SignalServiceAttachmentPointer(pointer.Id,
                         pointer.ContentType,
                         pointer.Key.ToByteArray(),
-                        envelope.getRelay(),
-                        pointer.Digest.ToByteArray(),
+                        envelope.GetRelay(),
+                        pointer.SizeOneofCase == AttachmentPointer.SizeOneofOneofCase.Size ? pointer.Size : 0,
+                        null,
+                        0, 0,
+                        pointer.DigestOneofCase == AttachmentPointer.DigestOneofOneofCase.Digest ? pointer.Digest.ToByteArray() : null,
                         null,
                         false);
                 }
@@ -404,4 +475,5 @@ namespace libsignalservice.crypto
             };
         }
     }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 }

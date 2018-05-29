@@ -1,54 +1,81 @@
-/**
- * Copyright (C) 2017 smndtrl, golf1052
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- */
-
+using libsignal;
+using libsignalservice.push;
+using libsignalservice.util;
 using System;
 using System.IO;
+using static libsignalservice.messages.multidevice.VerifiedMessage;
 
 namespace libsignalservice.messages.multidevice
 {
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
     public class DeviceContactsInputStream : ChunkedInputStream
     {
-        public DeviceContactsInputStream(Stream input)
-        : base(input)
-        {
-        }
+        public DeviceContactsInputStream(Stream input) : base(input) { }
 
-        public DeviceContact read()// throws IOException
+        public DeviceContact Read()// throws IOException
         {
-            /*long detailsLength = readRawVarint32();
+            int detailsLength = ReadRawVarint32();
+            if (detailsLength == -1)
+            {
+                return null;
+            }
             byte[] detailsSerialized = new byte[(int)detailsLength];
-            Util.readFully(input, detailsSerialized);
+            Util.ReadFully(InputStream, detailsSerialized);
 
-            SignalServiceProtos.ContactDetails details = SignalServiceProtos.ContactDetails.ParseFrom(detailsSerialized);
-            String number = details.Number;
-            May<String> name = details.Name == null ? May<string>.NoValue : new May<string>(details.Name);
-            May<TextSecureAttachmentStream> avatar = May<TextSecureAttachmentStream>.NoValue;
+            var details = ContactDetails.Parser.ParseFrom(detailsSerialized);
+            string number = details.Number;
+            string name = details.Name;
+            SignalServiceAttachmentStream avatar = null;
+            string color = details.ColorOneofCase == ContactDetails.ColorOneofOneofCase.Color ? details.Color : null;
+            VerifiedMessage verified = null;
+            byte[] profileKey = null;
+            bool blocked = false;
+            uint? expireTimer = null;
 
-            if (details.HasAvatar)
+            if (details.AvatarOneofCase == ContactDetails.AvatarOneofOneofCase.Avatar)
             {
                 long avatarLength = details.Avatar.Length;
-                IInputStream avatarStream = new LimitedInputStream(input, avatarLength);
+                Stream avatarStream = new LimitedInputStream(InputStream, avatarLength);
                 String avatarContentType = details.Avatar.ContentType;
-
-                avatar = new May<TextSecureAttachmentStream>(new TextSecureAttachmentStream(avatarStream, avatarContentType, avatarLength));
+                avatar = new SignalServiceAttachmentStream(avatarStream, avatarContentType, avatarLength, null, false, null);
             }
 
-            return new DeviceContact(number, name, avatar);*/
-            throw new NotImplementedException();
+            if (details.VerifiedOneofCase == ContactDetails.VerifiedOneofOneofCase.Verified)
+            {
+                string destination = details.Verified.Destination;
+                IdentityKey identityKey = new IdentityKey(details.Verified.IdentityKey.ToByteArray(), 0);
+
+                VerifiedState state;
+                switch (details.Verified.State)
+                {
+                    case Verified.Types.State.Verified:
+                        state = VerifiedState.Verified;
+                        break;
+                    case Verified.Types.State.Unverified:
+                        state = VerifiedState.Unverified;
+                        break;
+                    case Verified.Types.State.Default:
+                        state = VerifiedState.Default;
+                        break;
+                    default:
+                        throw new InvalidMessageException("Unknown state: " + details.Verified.State);
+                }
+
+                verified = new VerifiedMessage(destination, identityKey, state, Util.CurrentTimeMillis());
+            }
+
+            if (details.ProfileKeyOneofCase == ContactDetails.ProfileKeyOneofOneofCase.ProfileKey)
+            {
+                profileKey = details.ProfileKey.ToByteArray();
+            }
+
+            if (details.ExpireTimerOneofCase == ContactDetails.ExpireTimerOneofOneofCase.ExpireTimer && details.ExpireTimer > 0)
+            {
+                expireTimer = details.ExpireTimer;
+            }
+
+            return new DeviceContact(number, name, avatar, color, verified, profileKey, blocked, expireTimer);
         }
     }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 }

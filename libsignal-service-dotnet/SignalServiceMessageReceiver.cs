@@ -1,18 +1,26 @@
+using libsignal;
 using libsignal.push;
 using libsignal.util;
+using libsignalservice.configuration;
+using libsignalservice.crypto;
 using libsignalservice.messages;
+using libsignalservice.profiles;
 using libsignalservice.push;
 using libsignalservice.util;
 using libsignalservice.websocket;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using static libsignalservice.messages.SignalServiceAttachment;
+using static libsignalservice.SignalServiceMessagePipe;
 
 namespace libsignalservice
 {
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
     /// <summary>
     /// The primary interface for receiving Signal Service messages.
     /// </summary>
@@ -21,42 +29,54 @@ namespace libsignalservice
         private const int BLOCK_SIZE = 16;
         private const int CIPHER_KEY_SIZE = 32;
         private const int MAC_KEY_SIZE = 32;
-        private readonly PushServiceSocket socket;
-        private readonly SignalServiceUrl[] urls;
-        private readonly CredentialsProvider credentialsProvider;
-        private readonly string userAgent;
+        private readonly PushServiceSocket Socket;
+        private readonly SignalServiceConfiguration Urls;
+        private readonly CredentialsProvider CredentialsProvider;
+        private readonly string UserAgent;
+        private readonly ConnectivityListener ConnectivityListener;
         private readonly CancellationToken Token;
 
         /// <summary>
         /// Construct a SignalServiceMessageReceiver.
         /// </summary>
+        /// <param name="token">A CancellationToken to cancel the receiver's operations</param>
         /// <param name="urls">The URL of the Signal Service.</param>
         /// <param name="credentials">The Signal Service user's credentials</param>
         /// <param name="userAgent"></param>
-        public SignalServiceMessageReceiver(CancellationToken token, SignalServiceUrl[] urls, CredentialsProvider credentials, string userAgent)
+        /// <param name="connectivityListener"></param>
+        public SignalServiceMessageReceiver(CancellationToken token, SignalServiceConfiguration urls, CredentialsProvider credentials, string userAgent, ConnectivityListener connectivityListener)
         {
-            this.Token = token;
-            this.urls = urls;
-            this.credentialsProvider = credentials;
-            this.socket = new PushServiceSocket(urls, credentials, userAgent);
-            this.userAgent = userAgent;
+            Token = token;
+            Urls = urls;
+            CredentialsProvider = credentials;
+            Socket = new PushServiceSocket(urls, credentials, userAgent);
+            UserAgent = userAgent;
+            ConnectivityListener = connectivityListener;
         }
 
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="address"></param>
+        /// <returns></returns>
         public SignalServiceProfile RetrieveProfile(SignalServiceAddress address)
         {
-            return socket.RetrieveProfile(address);
+            return Socket.RetrieveProfile(address);
         }
 
         /// <summary>
-        /// Retrieves a SignalServiceAttachment
+        /// TODO
         /// </summary>
-        /// <param name="pointer">The <see cref="SignalServiceAttachmentPointer"/>
-        /// received in a <see cref="SignalServiceDataMessage"/></param>
-        /// <param name="plaintextDestination">The download destination for this attachment.</param>
-        /// <param name="tmpCipherDestination">The temporary destination for this attachment before decryption</param>
-        public void retrieveAttachment(SignalServiceAttachmentPointer pointer, Stream plaintextDestination, Stream tmpCipherDestination, int maxSizeBytes)
+        /// <param name="path"></param>
+        /// <param name="destination"></param>
+        /// <param name="profileKey"></param>
+        /// <param name="maxSizeBytes"></param>
+        /// <returns></returns>
+        public Stream RetrieveProfileAvatar(string path, FileStream destination, byte[] profileKey, int maxSizeBytes)
         {
-            retrieveAttachment(pointer, plaintextDestination, tmpCipherDestination, maxSizeBytes, null);
+            Socket.RetrieveProfileAvatar(path, destination, maxSizeBytes);
+            destination.Seek(0, SeekOrigin.Begin);
+            return new ProfileCipherInputStream(destination, profileKey);
         }
 
         /// <summary>
@@ -64,15 +84,14 @@ namespace libsignalservice
         /// </summary>
         /// <param name="pointer">The <see cref="SignalServiceAttachmentPointer"/>
         /// received in a <see cref="SignalServiceDataMessage"/></param>
-        /// <param name="plaintextDestination">The download destination for this attachment.</param>
         /// <param name="tmpCipherDestination">The temporary destination for this attachment before decryption</param>
         /// <param name="maxSizeBytes">The maximum size for this attachment (not yet implemented)</param>
         /// <param name="listener">An optional listener (may be null) to receive callbacks on download progress.</param>
-        public void retrieveAttachment(SignalServiceAttachmentPointer pointer, Stream plaintextDestination, Stream tmpCipherDestination, int maxSizeBytes, ProgressListener listener)
+        public Stream RetrieveAttachment(SignalServiceAttachmentPointer pointer, Stream tmpCipherDestination, int maxSizeBytes, IProgressListener listener)
         {
-            socket.retrieveAttachment(pointer.Relay, pointer.Id, tmpCipherDestination, maxSizeBytes);
-            tmpCipherDestination.Seek(0, SeekOrigin.Begin);
-            DecryptAttachment(pointer, tmpCipherDestination, plaintextDestination);
+            Socket.RetrieveAttachment(pointer.Relay, pointer.Id, tmpCipherDestination, maxSizeBytes);
+            tmpCipherDestination.Position = 0;
+            return AttachmentCipherInputStream.CreateFor(tmpCipherDestination, pointer.Size != null ? pointer.Size.Value : 0, pointer.Key, pointer.Digest);
         }
 
         /// <summary>
@@ -82,96 +101,7 @@ namespace libsignalservice
         /// <returns></returns>
         public string RetrieveAttachmentDownloadUrl(SignalServiceAttachmentPointer pointer)
         {
-            return socket.RetrieveAttachmentDownloadUrl(pointer.Relay, pointer.Id);
-        }
-
-        /// <summary>
-        /// Decrypts an attachment
-        /// </summary>
-        /// <param name="pointer">The pointer for the attachment</param>
-        /// <param name="cipherStream">The input encrypted stream</param>
-        /// <param name="plaintextStream">The output decrypted stream</param>
-        public void DecryptAttachment(SignalServiceAttachmentPointer pointer, Stream cipherStream, Stream plaintextStream)
-        {
-            byte[] combinedKeyMaterial = pointer.Key;
-            byte[][] parts = Util.split(combinedKeyMaterial, CIPHER_KEY_SIZE, MAC_KEY_SIZE);
-
-            using (HMAC mac = new HMACSHA256(parts[1]))
-            {
-                VerifyMac(cipherStream, mac, pointer.Digest);
-            }
-
-            byte[] iv = new byte[BLOCK_SIZE];
-            cipherStream.Seek(0, SeekOrigin.Begin);
-            Util.readFully(cipherStream, iv);
-
-            using (var aes = Aes.Create())
-            {
-                aes.Key = parts[0];
-                aes.IV = iv;
-                aes.Mode = CipherMode.CBC;
-                aes.Padding = PaddingMode.PKCS7;
-                using (var decrypt = aes.CreateDecryptor())
-                using (var cryptoStream = new CryptoStream(cipherStream, decrypt, CryptoStreamMode.Read))
-                {
-                    byte[] buffer = new byte[CIPHER_KEY_SIZE];
-                    int read = cryptoStream.Read(buffer, 0, buffer.Length);
-                    while (read > 0)
-                    {
-                        plaintextStream.Write(buffer, 0, read);
-                        read = cryptoStream.Read(buffer, 0, buffer.Length);
-                    }
-                }
-            }
-        }
-
-        /// <summary>
-        /// Verifies an attachment
-        /// </summary>
-        /// <param name="stream">The encrypted stream</param>
-        /// <param name="mac">A MAC</param>
-        /// <param name="theirDigest">The received digest</param>
-        private void VerifyMac(Stream stream, HMAC mac, byte[] theirDigest)
-        {
-            using (SHA256 digest = SHA256.Create())
-            {
-                // Determine the file length (total file - the mac at the end (32 bytes))
-                int remainingData = Util.toIntExact(stream.Length) - mac.Key.Length;
-                byte[] buffer = new byte[4096];
-                byte[] ourMac = new byte[0];
-
-                // Read the data into a memory stream because we can only get the hash on an entire set of data
-                MemoryStream memoryStream = new MemoryStream(remainingData);
-                while (remainingData > 0)
-                {
-                    int read = stream.Read(buffer, 0, Math.Min(buffer.Length, remainingData));
-                    memoryStream.Write(buffer, 0, read);
-                    remainingData -= read;
-                }
-
-                // Get the hash for the file
-                memoryStream.Seek(0, SeekOrigin.Begin);
-                ourMac = mac.ComputeHash(memoryStream);
-
-                // Then read the rest of the file (the MAC) and check if the hashes are the same
-                byte[] theirMac = new byte[mac.Key.Length];
-                Util.readFully(stream, theirMac);
-                if (!ByteUtil.isEqual(ourMac, theirMac))
-                {
-                    throw new Exception("MAC doesn't match");
-                }
-
-                // Then compare the digests by hashing the entire file
-                stream.Seek(0, SeekOrigin.Begin);
-                byte[] ourDigest = digest.ComputeHash(stream);
-                if (!ByteUtil.isEqual(ourDigest, theirDigest))
-                {
-                    throw new Exception("Digest doesn't match");
-                }
-
-                // Finally throw the MAC at the end away
-                stream.SetLength(stream.Length - mac.Key.Length);
-            }
+            return Socket.RetrieveAttachmentDownloadUrl(pointer.Relay, pointer.Id);
         }
 
         /// <summary>
@@ -180,35 +110,31 @@ namespace libsignalservice
         /// Callers must call <see cref="SignalServiceMessagePipe.Shutdown()"/> when finished with the pipe.
         /// </summary>
         /// <returns>A SignalServiceMessagePipe for receiving Signal Service messages.</returns>
-        public SignalServiceMessagePipe createMessagePipe()
+        public SignalServiceMessagePipe CreateMessagePipe()
         {
-            SignalWebSocketConnection webSocket = new SignalWebSocketConnection(Token, urls[0].getUrl(), credentialsProvider, userAgent);
-            return new SignalServiceMessagePipe(Token, webSocket, credentialsProvider);
+            SignalWebSocketConnection webSocket = new SignalWebSocketConnection(Token, Urls.SignalServiceUrls[0].Url, CredentialsProvider, UserAgent, ConnectivityListener);
+            return new SignalServiceMessagePipe(Token, webSocket, CredentialsProvider);
         }
 
-        public List<SignalServiceEnvelope> retrieveMessages(MessageReceivedCallback callback)
+        public List<SignalServiceEnvelope> RetrieveMessages(IMessagePipeCallback callback)
         {
             List<SignalServiceEnvelope> results = new List<SignalServiceEnvelope>();
-            List<SignalServiceEnvelopeEntity> entities = socket.getMessages();
+            List<SignalServiceEnvelopeEntity> entities = Socket.GetMessages();
 
             foreach (SignalServiceEnvelopeEntity entity in entities)
             {
-                SignalServiceEnvelope envelope = new SignalServiceEnvelope((int)entity.getType(), entity.getSource(),
-                                                                      (int)entity.getSourceDevice(), entity.getRelay(),
-                                                                      (int)entity.getTimestamp(), entity.getMessage(),
-                                                                      entity.getContent());
+                SignalServiceEnvelope envelope = new SignalServiceEnvelope((int)entity.Type, entity.Source,
+                                                                      (int)entity.SourceDevice, entity.Relay,
+                                                                      (int)entity.Timestamp, entity.Message,
+                                                                      entity.Content);
 
-                callback.onMessage(envelope);
+                callback.OnMessage(envelope);
                 results.Add(envelope);
 
-                socket.acknowledgeMessage(entity.getSource(), entity.getTimestamp());
+                Socket.AcknowledgeMessage(entity.Source, entity.Timestamp);
             }
             return results;
         }
-
-        public interface MessageReceivedCallback
-        {
-            void onMessage(SignalServiceEnvelope envelope);
-        }
     }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 }

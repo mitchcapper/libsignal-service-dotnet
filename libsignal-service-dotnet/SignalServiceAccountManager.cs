@@ -5,15 +5,18 @@ using libsignal.push;
 using libsignal.state;
 using libsignal.util;
 using libsignal_service_dotnet.messages.calls;
+using libsignalservice.configuration;
 using libsignalservice.crypto;
 using libsignalservice.messages.multidevice;
 using libsignalservice.push;
+using libsignalservice.push.http;
 using libsignalservice.util;
 using Strilanc.Value;
 using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace libsignalservice
 {
@@ -23,32 +26,52 @@ namespace libsignalservice
     /// </summary>
     public class SignalServiceAccountManager
     {
-        private PushServiceSocket pushServiceSocket;
+        private PushServiceSocket PushServiceSocket;
         private static ProvisioningSocket ProvisioningSocket;
-        private SignalServiceUrl[] Urls;
-        private readonly string user;
-        private readonly string userAgent;
+        private SignalServiceConfiguration Configuration;
+        private readonly string User;
+        private readonly string UserAgent;
 
         /// <summary>
-        /// Construct a SignalServivceAccountManager.
+        /// Construct a SignalServivceAccountManager
         /// </summary>
-        /// <param name="urls">The URL for the Signal Service.</param>
+        /// <param name="configuration">The URL configuration for the Signal Service</param>
         /// <param name="user">A Signal Service phone number</param>
-        /// <param name="password">A Signal Service password.</param>
-        /// <param name="userAgent">A string which identifies the client software.</param>
-        public SignalServiceAccountManager(SignalServiceUrl[] urls,
+        /// <param name="password">A Signal Service password</param>
+        /// <param name="deviceId">A Signal Service device id</param>
+        /// <param name="userAgent">A string which identifies the client software</param>
+        public SignalServiceAccountManager(SignalServiceConfiguration configuration,
                                         string user, string password, int deviceId, string userAgent)
         {
-            this.pushServiceSocket = new PushServiceSocket(urls, new StaticCredentialsProvider(user, password, null, deviceId), userAgent);
-            this.user = user;
-            this.userAgent = userAgent;
+            PushServiceSocket = new PushServiceSocket(configuration, new StaticCredentialsProvider(user, password, null, deviceId), userAgent);
+            User = user;
+            UserAgent = userAgent;
         }
 
-        public SignalServiceAccountManager(SignalServiceUrl[] urls, CancellationToken token, string userAgent)
+        /// <summary>
+        /// Construct a SignalServiceAccountManager for linking as a slave device
+        /// </summary>
+        /// <param name="configuration">The URL configuration for the Signal Service</param>
+        /// <param name="token">The cancellation token for the ProvisioningSocket</param>
+        /// <param name="userAgent">A string which identifies the client software</param>
+        public SignalServiceAccountManager(SignalServiceConfiguration configuration, string userAgent)
         {
-            Urls = urls;
-            ProvisioningSocket = new ProvisioningSocket(urls[0].getUrl(), token);
-            pushServiceSocket = new PushServiceSocket(urls, new StaticCredentialsProvider(null, null, null, (int)SignalServiceAddress.DEFAULT_DEVICE_ID), userAgent);
+            Configuration = configuration;
+            UserAgent = userAgent;
+            ProvisioningSocket = new ProvisioningSocket(configuration.SignalServiceUrls[0].Url);
+            PushServiceSocket = new PushServiceSocket(configuration, new StaticCredentialsProvider(null, null, null, (int)SignalServiceAddress.DEFAULT_DEVICE_ID), userAgent);
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="pin"></param>
+        public void SetPin(string pin)
+        {
+            if (pin != null)
+                PushServiceSocket.SetPin(pin);
+            else
+                PushServiceSocket.RemovePin();
         }
 
         /// <summary>
@@ -56,15 +79,15 @@ namespace libsignalservice
         /// </summary>
         /// <param name="gcmRegistrationId">The GCM id to register.  A call with an absent value will unregister.</param>
         /// <returns></returns>
-        public void setGcmId(May<string> gcmRegistrationId)// throws IOException
+        public void SetGcmId(May<string> gcmRegistrationId)// throws IOException
         {
             if (gcmRegistrationId.HasValue)
             {
-                this.pushServiceSocket.registerGcmId(gcmRegistrationId.ForceGetValue());
+                this.PushServiceSocket.RegisterGcmId(gcmRegistrationId.ForceGetValue());
             }
             else
             {
-                this.pushServiceSocket.unregisterGcmId();
+                this.PushServiceSocket.UnregisterGcmId();
             }
         }
 
@@ -73,9 +96,9 @@ namespace libsignalservice
         /// an SMS verification code to this Signal user.
         /// </summary>
         /// <returns></returns>
-        public void requestSmsVerificationCode()// throws IOException
+        public void RequestSmsVerificationCode()// throws IOException
         {
-            this.pushServiceSocket.createAccount(false);
+            this.PushServiceSocket.CreateAccount(false);
         }
 
         /// <summary>
@@ -83,27 +106,29 @@ namespace libsignalservice
         /// make a voice call to this Signal user.
         /// </summary>
         /// <returns></returns>
-        public void requestVoiceVerificationCode()// throws IOException
+        public void RequestVoiceVerificationCode()// throws IOException
         {
-            this.pushServiceSocket.createAccount(true);
+            this.PushServiceSocket.CreateAccount(true);
         }
 
         /// <summary>
         /// Verify a Signal Service account with a received SMS or voice verification code.
         /// </summary>
         /// <param name="verificationCode">The verification code received via SMS or Voice
-        /// <see cref="requestSmsVerificationCode()"/> and <see cref="requestVoiceVerificationCode()"/></param>
+        /// <see cref="RequestSmsVerificationCode()"/> and <see cref="RequestVoiceVerificationCode()"/></param>
         /// <param name="signalingKey">52 random bytes.  A 32 byte AES key and a 20 byte Hmac256 key, concatenated.</param>
         /// <param name="signalProtocolRegistrationId">A random 14-bit number that identifies this Signal install.
         /// This value should remain consistent across registrations for the
         /// same install, but probabilistically differ across registrations
         /// for separate installs.</param>
+        /// <param name="fetchesMessages">True if the client does not support GCM</param>
+        /// <param name="pin"></param>
         /// <returns></returns>
-        public void verifyAccountWithCode(string verificationCode, string signalingKey,
-                                   uint signalProtocolRegistrationId, bool fetchesMessages)
+        public void VerifyAccountWithCode(string verificationCode, string signalingKey,
+                                   uint signalProtocolRegistrationId, bool fetchesMessages, string pin)
         {
-            this.pushServiceSocket.verifyAccountCode(verificationCode, signalingKey,
-                                                 signalProtocolRegistrationId, fetchesMessages);
+            this.PushServiceSocket.VerifyAccountCode(verificationCode, signalingKey,
+                                                 signalProtocolRegistrationId, fetchesMessages, pin);
         }
 
         /// <summary>
@@ -114,11 +139,12 @@ namespace libsignalservice
         /// This value should remain consistent across registrations for the same
         /// install, but probabilistically differ across registrations for
         /// separate installs.</param>
-        /// <param name="voice">A boolean that indicates whether the client supports secure voice (RedPhone)</param>
+        /// <param name="fetchesMessages">True if the client does not support GCM</param>
+        /// <param name="pin"></param>
         /// <returns></returns>
-        public void setAccountAttributes(string signalingKey, uint signalProtocolRegistrationId, bool fetchesMessages)
+        public void SetAccountAttributes(string signalingKey, uint signalProtocolRegistrationId, bool fetchesMessages, string pin)
         {
-            this.pushServiceSocket.setAccountAttributes(signalingKey, signalProtocolRegistrationId, fetchesMessages);
+            this.PushServiceSocket.SetAccountAttributes(signalingKey, signalProtocolRegistrationId, fetchesMessages, pin);
         }
 
         /// <summary>
@@ -129,9 +155,9 @@ namespace libsignalservice
         /// <param name="signedPreKey">The client's signed prekey.</param>
         /// <param name="oneTimePreKeys">The client's list of one-time prekeys.</param>
         /// <returns></returns>
-        public bool setPreKeys(IdentityKey identityKey, SignedPreKeyRecord signedPreKey, IList<PreKeyRecord> oneTimePreKeys)//throws IOException
+        public bool SetPreKeys(IdentityKey identityKey, SignedPreKeyRecord signedPreKey, IList<PreKeyRecord> oneTimePreKeys)//throws IOException
         {
-            this.pushServiceSocket.registerPreKeys(identityKey, signedPreKey, oneTimePreKeys);
+            this.PushServiceSocket.RegisterPreKeys(identityKey, signedPreKey, oneTimePreKeys);
             return true;
         }
 
@@ -139,110 +165,147 @@ namespace libsignalservice
         ///
         /// </summary>
         /// <returns>The server's count of currently available (eg. unused) prekeys for this user.</returns>
-        public int getPreKeysCount()// throws IOException
+        public int GetPreKeysCount()// throws IOException
         {
-            return this.pushServiceSocket.getAvailablePreKeys();
+            return this.PushServiceSocket.GetAvailablePreKeys();
         }
 
         /// <summary>
         /// Set the client's signed prekey.
         /// </summary>
         /// <param name="signedPreKey">The client's new signed prekey.</param>
-        public void setSignedPreKey(SignedPreKeyRecord signedPreKey)// throws IOException
+        public void SetSignedPreKey(SignedPreKeyRecord signedPreKey)// throws IOException
         {
-            this.pushServiceSocket.setCurrentSignedPreKey(signedPreKey);
+            this.PushServiceSocket.SetCurrentSignedPreKey(signedPreKey);
         }
 
         /// <summary>
         ///
         /// </summary>
         /// <returns>The server's view of the client's current signed prekey.</returns>
-        public SignedPreKeyEntity getSignedPreKey()// throws IOException
+        public SignedPreKeyEntity GetSignedPreKey()// throws IOException
         {
-            return this.pushServiceSocket.getCurrentSignedPreKey();
+            return this.PushServiceSocket.GetCurrentSignedPreKey();
         }
 
         /// <summary>
-        /// Checks whether a contact is currently registered with the server.
+        /// Checks whether a contact is currently registered with the server
         /// </summary>
         /// <param name="e164number">The contact to check.</param>
         /// <returns>An optional ContactTokenDetails, present if registered, absent if not.</returns>
-        public May<ContactTokenDetails> getContact(string e164number)// throws IOException
+        public May<ContactTokenDetails> GetContact(string e164number)// throws IOException
         {
-            string contactToken = createDirectoryServerToken(e164number, true);
-            ContactTokenDetails contactTokenDetails = this.pushServiceSocket.getContactTokenDetails(contactToken);
+            string contactToken = CreateDirectoryServerToken(e164number, true);
+            ContactTokenDetails contactTokenDetails = this.PushServiceSocket.GetContactTokenDetails(contactToken);
 
             if (contactTokenDetails != null)
             {
-                contactTokenDetails.setNumber(e164number);
+                contactTokenDetails.Number = e164number;
             }
 
             return new May<ContactTokenDetails>(contactTokenDetails);
         }
 
         /// <summary>
-        /// Checks which contacts in a set are registered with the server.
+        /// Checks which contacts in a set are registered with the server
         /// </summary>
         /// <param name="e164numbers">The contacts to check.</param>
         /// <returns>A list of ContactTokenDetails for the registered users.</returns>
-        public List<ContactTokenDetails> getContacts(IList<string> e164numbers)
+        public List<ContactTokenDetails> GetContacts(IList<string> e164numbers)
         {
-            IDictionary<string, string> contactTokensMap = createDirectoryServerTokenMap(e164numbers);
-            List<ContactTokenDetails> activeTokens = this.pushServiceSocket.retrieveDirectory(contactTokensMap.Keys);
+            IDictionary<string, string> contactTokensMap = CreateDirectoryServerTokenMap(e164numbers);
+            List<ContactTokenDetails> activeTokens = this.PushServiceSocket.RetrieveDirectory(contactTokensMap.Keys);
 
             foreach (ContactTokenDetails activeToken in activeTokens)
             {
-                string number;
-                contactTokensMap.TryGetValue(activeToken.getToken(), out number);
-                activeToken.setNumber(number);
+                contactTokensMap.TryGetValue(activeToken.Token, out string number);
+                activeToken.Number = number;
             }
 
             return activeTokens;
         }
 
-        public string getAccoountVerificationToken()
+        /// <summary>
+        /// Request a UUID from the server for linking as a new device.
+        /// Called by the new device.
+        /// </summary>
+        /// <param name="token">The UUID, Base64 encoded</param>
+        /// <returns></returns>
+        public async Task<string> GetNewDeviceUuid(CancellationToken token)
         {
-            return this.pushServiceSocket.getAccountVerificationToken();
+            ProvisioningSocket = new ProvisioningSocket(Configuration.SignalServiceUrls[0].Url);
+            return (await ProvisioningSocket.GetProvisioningUuid(token)).Uuid;
         }
 
-        public string GetNewDeviceUuid(CancellationToken token)
+        /// <summary>
+        /// Request a code for verification of a new device.
+        /// Called by an already verified device.
+        /// </summary>
+        /// <returns>A verification code (String of 6 digits)</returns>
+        public string GetNewDeviceVerificationCode()// throws IOException
         {
-            ProvisioningSocket = new ProvisioningSocket(Urls[0].getUrl(), token);
-            return ProvisioningSocket.GetProvisioningUuid().Uuid;
+            return this.PushServiceSocket.GetNewDeviceVerificationCode();
         }
 
-        public string getNewDeviceVerificationCode()// throws IOException
+        /// <summary>
+        /// Fetch a ProvisionMessage from the server.
+        /// </summary>
+        /// <param name="token"></param>
+        /// <param name="tempIdentity"></param>
+        /// <returns></returns>
+        public async Task<SignalServiceProvisionMessage> GetProvisioningMessage(CancellationToken token, IdentityKeyPair tempIdentity)
         {
-            return this.pushServiceSocket.getNewDeviceVerificationCode();
-        }
-
-        public NewDeviceLinkResult FinishNewDeviceRegistration(IdentityKeyPair tempIdentity, string signalingKey, string password, bool sms, bool fetches, int regid, string name)
-        {
-            ProvisionMessage pm = ProvisioningSocket.GetProvisioningMessage(tempIdentity);
-            string provisioningCode = pm.ProvisioningCode;
-            byte[] publicKeyBytes = pm.IdentityKeyPublic.ToByteArray();
+            ProvisionMessage protoPm = await ProvisioningSocket.GetProvisioningMessage(token, tempIdentity);
+            string provisioningCode = protoPm.ProvisioningCode;
+            byte[] publicKeyBytes = protoPm.IdentityKeyPublic.ToByteArray();
             if (publicKeyBytes.Length == 32)
             {
                 byte[] type = { Curve.DJB_TYPE };
                 publicKeyBytes = ByteUtil.combine(type, publicKeyBytes);
             }
             ECPublicKey publicKey = Curve.decodePoint(publicKeyBytes, 0);
-            byte[] privateKeyBytes = pm.IdentityKeyPrivate.ToByteArray();
+            byte[] privateKeyBytes = protoPm.IdentityKeyPrivate.ToByteArray();
             ECPrivateKey privateKey = Curve.decodePrivatePoint(privateKeyBytes);
             IdentityKeyPair identity = new IdentityKeyPair(new IdentityKey(publicKey), privateKey);
-            pushServiceSocket = new PushServiceSocket(Urls, new StaticCredentialsProvider(pm.Number, password, null, -1), userAgent);
-            int deviceId = pushServiceSocket.finishNewDeviceRegistration(provisioningCode, signalingKey, sms, fetches, regid, name);
-            return new NewDeviceLinkResult()
+            return new SignalServiceProvisionMessage()
             {
-                DeviceId = deviceId,
+                Number = protoPm.Number,
                 Identity = identity,
-                Number = pm.Number
+                Code = protoPm.ProvisioningCode
             };
         }
 
-        public void addDevice(string deviceIdentifier,
+        /// <summary>
+        /// Finishes a registration as a new device.
+        /// Called by the new device. This method blocks until the already verified device has verified this device.
+        /// </summary>
+        /// <param name="token"></param>
+        /// <param name="provisionMessage"></param>
+        /// <param name="signalingKey"></param>
+        /// <param name="password"></param>
+        /// <param name="sms"></param>
+        /// <param name="fetches"></param>
+        /// <param name="regid"></param>
+        /// <param name="name"></param>
+        /// <returns></returns>
+        public async Task<int> FinishNewDeviceRegistration(CancellationToken token, SignalServiceProvisionMessage provisionMessage, string signalingKey, string password, bool sms, bool fetches, int regid, string name)
+        {
+            PushServiceSocket = new PushServiceSocket(Configuration, new StaticCredentialsProvider(provisionMessage.Number, password, null, -1), UserAgent);
+            return await PushServiceSocket.FinishNewDeviceRegistration(token, provisionMessage.Code, signalingKey, sms, fetches, regid, name);
+        }
+
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="deviceIdentifier"></param>
+        /// <param name="deviceKey"></param>
+        /// <param name="identityKeyPair"></param>
+        /// <param name="profileKey"></param>
+        /// <param name="code"></param>
+        public void AddDevice(string deviceIdentifier,
                               ECPublicKey deviceKey,
                               IdentityKeyPair identityKeyPair,
+                              byte[] profileKey,
                               string code)//throws InvalidKeyException, IOException
         {
             ProvisioningCipher cipher = new ProvisioningCipher(deviceKey);
@@ -250,45 +313,96 @@ namespace libsignalservice
             {
                 IdentityKeyPublic = ByteString.CopyFrom(identityKeyPair.getPublicKey().serialize()),
                 IdentityKeyPrivate = ByteString.CopyFrom(identityKeyPair.getPrivateKey().serialize()),
-                Number = user,
+                Number = User,
                 ProvisioningCode = code
             };
 
+            if (profileKey != null)
+            {
+                message.ProfileKey = ByteString.CopyFrom(profileKey);
+            }
+
             byte[] ciphertext = cipher.encrypt(message);
-            this.pushServiceSocket.sendProvisioningMessage(deviceIdentifier, ciphertext);
+            this.PushServiceSocket.SendProvisioningMessage(deviceIdentifier, ciphertext);
         }
 
-        public List<DeviceInfo> getDevices()
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <returns></returns>
+        public List<DeviceInfo> GetDevices()
         {
-            return this.pushServiceSocket.getDevices();
+            return this.PushServiceSocket.GetDevices();
         }
 
-        public void removeDevice(long deviceId)
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="deviceId"></param>
+        public void RemoveDevice(long deviceId)
         {
-            this.pushServiceSocket.removeDevice(deviceId);
+            this.PushServiceSocket.RemoveDevice(deviceId);
         }
 
-        public TurnServerInfo getTurnServerInfo()
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <returns></returns>
+        public async Task<TurnServerInfo> GetTurnServerInfo(CancellationToken token)
         {
-            return this.pushServiceSocket.getTurnServerInfo();
+            return await this.PushServiceSocket.GetTurnServerInfo(token);
         }
 
-        public void setSoTimeoutMillis(long soTimeoutMillis)
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="key"></param>
+        /// <param name="name"></param>
+        public void SetProfileName(byte[] key, string name)
         {
-            this.pushServiceSocket.setSoTimeoutMillis(soTimeoutMillis);
+            if (name == null) name = "";
+            string ciphertextName = Base64.EncodeBytesWithoutPadding(new ProfileCipher(key).EncryptName(Encoding.Unicode.GetBytes(name), ProfileCipher.NAME_PADDED_LENGTH));
+            PushServiceSocket.SetProfileName(ciphertextName);
         }
 
-        public void cancelInFlightRequests()
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="key"></param>
+        /// <param name="avatar"></param>
+        public void SetProfileAvatar(byte[] key, StreamDetails avatar)
         {
-            this.pushServiceSocket.cancelInFlightRequests();
+            ProfileAvatarData profileAvatarData = null;
+            if (avatar != null)
+            {
+                profileAvatarData = new ProfileAvatarData(avatar.InputStream, avatar.Length, avatar.ContentType, new ProfileCipherOutputStreamFactory(key));
+            }
+            PushServiceSocket.SetProfileAvatar(profileAvatarData);
         }
 
-        private string createDirectoryServerToken(string e164number, bool urlSafe)
+        /// <summary>
+        /// TODO
+        /// </summary>
+        /// <param name="soTimeoutMillis"></param>
+        public void SetSoTimeoutMillis(long soTimeoutMillis)
+        {
+            this.PushServiceSocket.SetSoTimeoutMillis(soTimeoutMillis);
+        }
+
+        /// <summary>
+        /// TODO
+        /// </summary>
+        public void CancelInFlightRequests()
+        {
+            this.PushServiceSocket.CancelInFlightRequests();
+        }
+
+        private string CreateDirectoryServerToken(string e164number, bool urlSafe)
         {
             try
             {
-                byte[] token = Util.trim(Hash.sha1(Encoding.UTF8.GetBytes(e164number)), 10);
-                string encoded = Base64.encodeBytesWithoutPadding(token);
+                byte[] token = Util.Trim(Hash.Sha1(Encoding.UTF8.GetBytes(e164number)), 10);
+                string encoded = Base64.EncodeBytesWithoutPadding(token);
 
                 if (urlSafe) return encoded.Replace('+', '-').Replace('/', '_');
                 else return encoded;
@@ -299,13 +413,13 @@ namespace libsignalservice
             }
         }
 
-        private IDictionary<string, string> createDirectoryServerTokenMap(IList<string> e164numbers)
+        private IDictionary<string, string> CreateDirectoryServerTokenMap(IList<string> e164numbers)
         {
             IDictionary<string, string> tokenMap = new Dictionary<string, string>(e164numbers.Count);
 
             foreach (string number in e164numbers)
             {
-                var token = createDirectoryServerToken(number, false);
+                var token = CreateDirectoryServerToken(number, false);
                 if (!tokenMap.ContainsKey(token)) // mimic java set behaviour
                 {
                     tokenMap.Add(token, number);
@@ -316,10 +430,13 @@ namespace libsignalservice
         }
     }
 
-    public class NewDeviceLinkResult
+
+#pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
+    public class SignalServiceProvisionMessage
     {
-        public IdentityKeyPair Identity { get; set; }
-        public int DeviceId { get; set; }
-        public string Number { get; set; }
+        public IdentityKeyPair Identity { get; internal set; }
+        public string Number { get; internal set; }
+        public string Code { get; internal set; }
     }
+#pragma warning restore CS1591 // Missing XML comment for publicly visible type or member
 }

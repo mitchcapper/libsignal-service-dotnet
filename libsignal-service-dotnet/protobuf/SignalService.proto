@@ -27,6 +27,7 @@ message Content {
   oneof syncMessage_oneof				{ SyncMessage syncMessage     = 2; }
   oneof callMessage_oneof               { CallMessage callMessage     = 3; }
   oneof nullMessage_oneof       { NullMessage nullMessage = 4; }
+  oneof receiptMessage_oneof { ReceiptMessage receiptMessage = 5; }
 }
 
 message CallMessage {
@@ -68,6 +69,19 @@ message DataMessage {
     ZERO_PLACEHOLDER = 0;
     END_SESSION = 1;
     EXPIRATION_TIMER_UPDATE = 2;
+	PROFILE_KEY_UPDATE = 4;
+  }
+
+  message Quote {
+    message QuotedAttachment {
+	  oneof contentType_oneof { string contentType = 1; }
+	  oneof fileName_oneof { string fileName = 2;}
+	  oneof thumbnail_oneof { AttachmentPointer thumbnail = 3; }
+	}
+    oneof id_oneof { uint64 id = 1; }
+	oneof author_oneof { string author = 2; }
+	oneof text_oneof { string text = 3; }
+	repeated QuotedAttachment attachments = 4;
   }
 
   oneof body_oneof						{ string             body        = 1; }
@@ -75,10 +89,23 @@ message DataMessage {
   oneof group_oneof						{ GroupContext       group       = 3; }
   oneof flags_oneof						{ uint32             flags       = 4; }
   oneof expireTimer_oneof				{ uint32             expireTimer = 5; }
+  oneof profileKey_oneof                { bytes              profileKey  = 6; }
+  oneof timestamp_oneof                 { uint64             timestamp   = 7; }
+  oneof quote_oneof                     { Quote              quote       = 8; }
 }
 
 message NullMessage {
   oneof padding_oneof { bytes padding = 1; }
+}
+
+message ReceiptMessage {
+	enum Type {
+		DELIVERY = 0;
+		READ = 1;
+	}
+
+	oneof type_oneof { Type type = 1; }
+	repeated uint64 timestamp = 2;
 }
 
 message Verified {
@@ -121,6 +148,7 @@ message SyncMessage {
       CONTACTS = 1;
       GROUPS   = 2;
 	  BLOCKED  = 3;
+	  CONFIGURATION = 4;
     }
 
     oneof type_oneof						{ Type type = 1; }
@@ -131,6 +159,10 @@ message SyncMessage {
 	oneof timestamp_oneof					{ uint64 timestamp = 2; }
   }
 
+  message Configuration {
+    oneof readReceipts_oneof { bool readReceipts = 1; }
+  }
+
   oneof sent_oneof							{ Sent     sent     = 1; }
   oneof contacts_oneof						{ Contacts contacts = 2; }
   oneof groups_oneof						{ Groups   groups   = 3; }
@@ -138,6 +170,7 @@ message SyncMessage {
   repeated Read read = 5;
   oneof blocked_oneof						{ Blocked  blocked  = 6; }
   oneof verified_oneof          { Verified verified = 7; }
+  oneof configuration_oneof { Configuration configuration = 9; }
   oneof padding_oneof           { bytes padding = 8; }
 }
 
@@ -155,6 +188,8 @@ message AttachmentPointer {
   oneof digest_oneof						{ bytes   digest      = 6; }
   oneof fileName_oneof						{ string  fileName    = 7; }
   oneof flags_oneof							{ uint32 flags        = 8; }
+  oneof width_oneof { uint32 width = 9; }
+  oneof height_oneof { uint32 height = 10; }
 }
 
 message GroupContext {
@@ -178,11 +213,14 @@ message ContactDetails {
     oneof length_oneof					{ uint32 length      = 2; }
   }
 
-  oneof number_oneof				{ string number = 1; }
-  oneof name_oneof					{ string name   = 2; }
-  oneof avatar_oneof				{ Avatar avatar = 3; }
-  oneof color_oneof					{ string color  = 4; }
-  oneof verified_oneof      { Verified verified = 5; }
+  oneof number_oneof				{ string number     = 1; }
+  oneof name_oneof					{ string name       = 2; }
+  oneof avatar_oneof				{ Avatar avatar     = 3; }
+  oneof color_oneof					{ string color      = 4; }
+  oneof verified_oneof              { Verified verified = 5; }
+  oneof profileKey_oneof            { bytes profileKey  = 6; }
+  oneof blocked_oneof { bool blocked = 7; }
+  oneof expireTimer_oneof { uint32 expireTimer = 8; }
 }
 
 message GroupDetails {
@@ -196,4 +234,5 @@ message GroupDetails {
   repeated string members = 3;
   oneof avatar_oneof				{ Avatar avatar  = 4; }
   oneof active_oneof				{ bool   active  = 5; } //[default = true] ### }
+  oneof expireTimer_oneof { uint32 expireTimer = 6; }
 }
