@@ -73,6 +73,7 @@ namespace libsignalservice.crypto
         /// Decrypt a received <see cref="SignalServiceEnvelope"/>
         /// </summary>
         /// <param name="envelope">The received SignalServiceEnvelope</param>
+        /// <param name="callback">Optional callback to call during the decrypt process before it is acked</param>
         /// <returns>a decrypted SignalServiceContent</returns>
         public async Task<SignalServiceContent?> Decrypt(SignalServiceEnvelope envelope)
         {
@@ -160,13 +161,13 @@ namespace libsignalservice.crypto
                     };
                 }
             }
-                return null;
+            return null;
         }
         private class DecryptionCallbackHandler : DecryptionCallback
         {
             public Task handlePlaintext(Plaintext plaintext, SessionRecord sessionRecord)
             {
-                throw new InvalidMessageException(e);
+                return callback(GetStrippedMessage(sessionCipher, plaintext));
             }
             public SessionCipher sessionCipher;
             public Func<Plaintext, Task> callback;
@@ -220,7 +221,6 @@ namespace libsignalservice.crypto
                 }
             return GetStrippedMessage(sessionCipher, paddedMessage);
 			}
-			catch (DuplicateMessageException e)
             {
                 throw new ProtocolDuplicateMessageException(e, envelope.GetSource(), envelope.GetSourceDevice());
             }
@@ -242,8 +242,6 @@ namespace libsignalservice.crypto
             }
             catch (libsignal.exceptions.UntrustedIdentityException e)
             {
-                throw new ProtocolUntrustedIdentityException(e, envelope.GetSource(), envelope.GetSourceDevice());
-            }
             catch (InvalidVersionException e)
             {
                 throw new ProtocolInvalidVersionException(e, envelope.GetSource(), envelope.GetSourceDevice());
