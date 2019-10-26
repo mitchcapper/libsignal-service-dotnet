@@ -57,6 +57,7 @@ namespace libsignalservice.crypto
         /// Decrypt a received <see cref="SignalServiceEnvelope"/>
         /// </summary>
         /// <param name="envelope">The received SignalServiceEnvelope</param>
+        /// <param name="callback">Optional callback to call during the decrypt process before it is acked</param>
         /// <returns>a decrypted SignalServiceContent</returns>
         public async Task<SignalServiceContent> Decrypt(SignalServiceEnvelope envelope, Func<SignalServiceContent, Task> callback = null)
         {
@@ -87,7 +88,7 @@ namespace libsignalservice.crypto
                 throw new InvalidMessageException(e);
             }
         }
-        private async Task<SignalServiceContent> DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data)
+        private Task<SignalServiceContent> DecryptComplete(SignalServiceEnvelope envelope, byte[] decrypted_data)
         {
             SignalServiceContent content = new SignalServiceContent();
 
@@ -133,13 +134,13 @@ namespace libsignalservice.crypto
                 }
             }
 
-            return content;
+            return Task.FromResult(content);
         }
         private class DecryptionCallbackHandler : DecryptionCallback
         {
             public Task handlePlaintext(byte[] plaintext, SessionRecord sessionRecord)
             {
-                return callback(GetStrippedMessage(sessionCipher, plaintext));
+                return callback(GetStrippedMessage(sessionRecord, plaintext));
             }
             public SessionCipher sessionCipher;
             public Func<byte[], Task> callback;
@@ -177,6 +178,11 @@ namespace libsignalservice.crypto
                 throw new InvalidMessageException("Unknown type: " + envelope.GetEnvelopeType() + " from " + envelope.GetSource());
             }
             return GetStrippedMessage(sessionCipher, paddedMessage);
+        }
+        private static byte[] GetStrippedMessage(SessionRecord sessionRecord, byte[] paddedMessage)
+        {
+            PushTransportDetails transportDetails = new PushTransportDetails(sessionRecord.getSessionState().getSessionVersion());
+            return transportDetails.GetStrippedPaddingMessageBody(paddedMessage);
         }
         private static byte[] GetStrippedMessage(SessionCipher sessionCipher, byte[] paddedMessage)
         {
